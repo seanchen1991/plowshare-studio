@@ -29,6 +29,8 @@ export default defineConfig({
 					args: [
 						'--use-fake-device-for-media-stream',
 						'--use-fake-ui-for-media-stream',
+						// Otherwise performance.memory is rounded into coarse buckets, hiding slow leaks.
+						'--enable-precise-memory-info',
 						`--use-file-for-fake-video-capture=${resolve(fixtureFiles.video)}`,
 						`--use-file-for-fake-audio-capture=${resolve(fixtureFiles.audio)}`
 					]
