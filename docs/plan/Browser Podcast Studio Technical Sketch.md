@@ -33,10 +33,7 @@ The live call is only for talking; the episode is made from each person's local 
 
 **2. Local recording.** Each browser records its own camera and mic at full quality with `MediaRecorder`, independent of the call. Chunks are written every few seconds to the browser's private disk storage (the Origin Private File System), so a crash loses seconds, not the episode. Request persistent storage so the browser doesn't evict files, and keep the screen awake with the Wake Lock API.
 
-**3. File transfer.** After the call, the guest's recording goes to the host. Two options:
-
-- **No server:** send it over a WebRTC data channel while both tabs stay open. Free to run, but fragile for multi-gigabyte files.
-- **Cheap storage:** upload chunks to object storage such as Cloudflare R2 or Backblaze B2 during and after recording, resumable, deleted after download. More reliable; costs a little.
+**3. File transfer.** Each guest's recording goes to the host automatically, peer-to-peer over a WebRTC data channel, in the background while recording (throttled so the call always wins), resuming after interruptions. The host can connect their own Google Drive; the host's browser then copies every finished recording there, the host's own and every guest's. Guests never deal with cloud storage. See [ADR 0002](../adr/0002-guests-send-to-host-host-saves-to-drive.md).
 
 **4. Sync.** Both browsers start recording on a shared signal from the host and log timestamps against a common clock. A visible clap or tone at the start gives a fallback for lining tracks up by hand or by matching audio. Re-encoding to a constant frame rate fixes most drift.
 
@@ -69,7 +66,7 @@ Because users' computers do the heavy work, the costs are small and mostly scale
 | Static site | Serves the app | Free tiers (GitHub Pages, Cloudflare Pages) |
 | Signaling server | Introduces browsers to each other | A few dollars a month on a small server |
 | TURN relay | Carries video when firewalls block direct connections | Grows with usage; only some calls need it |
-| Object storage (optional) | Holds guest uploads until the host downloads them | Pennies per gigabyte; Cloudflare R2 charges no download fees |
+| Google Drive (optional) | Keeps every recording safe outside the browser | Free to run; uses the host's own Drive storage |
 | Transcription and export | Runs in each user's browser | Free |
 
 The relay is the cost to watch at scale. VDO.Ninja covers its relay through sponsors, which is one model for keeping a tool like this free.
@@ -82,7 +79,7 @@ Each phase is usable on its own, so you can record real episodes while building 
 2. **Simple cutter.** Waveform view, mark-and-delete ranges, automatic "remove pauses longer than X", export MP4 and audio-only.
 3. **Transcript editing.** In-browser Whisper, a clickable transcript, delete words to cut. Export the transcript for Substack.
 4. **Two-person calls.** Peer-to-peer call with signaling and a relay, each side recording locally, a guest page that needs no account.
-5. **Reliable guest transfer.** Resumable upload or data-channel transfer, progress shown to both sides, recovery after a crash or closed tab.
+5. **Reliable guest transfer.** Automatic peer-to-peer transfer to the host during recording, resumable, progress shown to both sides, recovery after a crash or closed tab. (Saving to Google Drive arrives earlier, as a follow-up to phase 1.)
 6. **Two-track editing.** Line tracks up, side-by-side or active-speaker layout, one cut list across both tracks.
 7. **Polish.** Safari support, smaller models for older machines, loudness leveling, captions export.
 
@@ -101,7 +98,7 @@ A shortcut for phases 4 and 5: use VDO.Ninja for the call at first and have each
 **Decisions so far**
 
 - [x] **Browsers:** Chrome, Edge, Firefox and other Chromium browsers first. Safari waits until enough users ask for it. The guest page should detect Safari and say plainly that it isn't supported yet.
-- [x] **File transfer:** configurable per user. The default is free peer-to-peer transfer. Users can opt in to their own storage: they paste in an S3-compatible bucket (Cloudflare R2, Backblaze B2, Amazon S3), pay that provider directly, and the app uploads guest recordings there in resumable chunks. Settings live only in the host's browser. Credentials need care: use keys limited to that one bucket, and have the host's browser hand the guest short-lived upload links (presigned URLs) so the guest never sees the keys. The bucket also needs a CORS rule allowing the app's address; the setup screen should walk through it.
+- [x] **File transfer:** guests send their recordings to the host automatically, peer-to-peer, while recording. The host can connect their own Google Drive, and every recording (the host's takes and every guest's) is copied there from the host's browser. The earlier bring-your-own S3 bucket option is dropped. See [ADR 0002](../adr/0002-guests-send-to-host-host-saves-to-drive.md).
 - [x] **Open source from day one,** license: AGPL-3.0 recommended (see the reply in chat for alternatives). Its dependencies (Mediabunny under MPL-2.0, Transformers.js under Apache-2.0) are generally considered compatible, but confirm before release.
 - [x] **No accounts, ever, by design.** Links do the work instead: each session has an unguessable host link and a separate guest link, so possessing the link is the permission. Relay abuse is handled by short-lived TURN credentials plus rate limits on the signaling server. Projects live in the host's browser, so the app needs a clear export-and-backup option, and warns that clearing browser data deletes recordings. Revisit only if a future feature truly needs it, such as syncing projects across computers.
 - [ ] **Ownership and funding:** undecided. Options to weigh later: you alone, sponsors (as VDO.Ninja does), or a co-op of the podcasters who rely on it.

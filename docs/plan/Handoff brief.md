@@ -190,7 +190,7 @@ tests/
 
 ## Not in this round
 
-Accounts, any backend, calls or guests, transcription, Safari, cloud storage, multi-track editing.
+Accounts, any backend, calls or guests, transcription, Safari, multi-track editing. Saving takes to Google Drive is planned as a follow-up right after phase 1 ([ADR 0002](../adr/0002-guests-send-to-host-host-saves-to-drive.md)), not part of this round.
 
 ## Working agreements
 

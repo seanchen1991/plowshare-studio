@@ -34,8 +34,8 @@ The stretch of a **Session**'s timeline between two **Segments** where nothing w
 _Avoid_: Dropout, hole, silence (silence is captured audio)
 
 **Backed up**:
-A **Session** whose **Recordings** have had every **Segment** downloaded out of the browser at least once; it backs up the footage, not the Session's timing.
-_Avoid_: Saved, exported (export makes an episode from a Project)
+A **Session** whose **Recordings** have had every **Segment** stored outside the browser, by download or by copying to the connected Google Drive; it backs up the footage, not the Session's timing.
+_Avoid_: Saved, exported (export makes an episode from a Project), synced
 
 **Recording time left**:
 How much longer capture can run before the disk can no longer hold both the raw and the finished copy of the current **Recording**.

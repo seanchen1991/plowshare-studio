@@ -36,13 +36,13 @@ Each packet carries a voice-activity flag (`vadVal` in `src/audio.ts`). Ennuicas
 
 The muxed recording is a stream split with `tee()` into: browser storage (always), live send to the host, and optionally cloud storage, a folder on disk, or a streamed download (`saveVideoData` in `src/video-record.ts`). This matches our plan to transfer progressively during the call and keep the guest's copy as the safety net. Its host can later pull files out of a guest's browser storage by proving knowledge of the recording key with a salted hash (`src/file-storage-main.ts`), which matches our rescue link (Hard parts §5.6).
 
-### 6. Let the host save to their own cloud account (phase 5)
+### 6. Let the host save to their own cloud account (adopted: ADR 0002)
 
 The host's browser can save incoming recordings to the host's own **Google Drive, Dropbox or WebDAV** (`src/file-storage-main.ts`, via `nonlocal-forage`). For podcasters this is far easier than our bring-your-own S3 bucket (create a bucket, a scoped key and a CORS rule).
 
-Notes:
+**Decided** ([ADR 0002](../adr/0002-guests-send-to-host-host-saves-to-drive.md)): we follow Ennuicastr's model. Guests send only to the host, peer-to-peer; the host's browser saves every take, solo ones included, to the host's Google Drive. The S3 bucket option is dropped.
 
-- Ennuicastr uses it **only from the host's browser**; guests never upload to the cloud directly. Our bucket design has guests upload directly with presigned URLs. Whether a guest can upload straight into the host's Drive (for example through a resumable-upload session the host's browser creates) needs checking.
+Notes:
 - Users need their own Google or Dropbox account, but no Plowshare account. The project needs a one-time OAuth app registration with each provider: Google's `drive.file` scope avoids its restricted-scope security review but still needs a consent screen; Dropbox requires production approval past 50 users. Browser-only token lifetimes for hour-long uploads need checking.
 
 ### 7. Save straight to a folder on disk (phase 1, issue 12)
