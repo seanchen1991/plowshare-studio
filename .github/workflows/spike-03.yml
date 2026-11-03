@@ -1,0 +1,65 @@
+name: Spike 03 – recording formats
+
+# Records with every MediaRecorder format each browser supports on Linux,
+# macOS and Windows, then checks in one place whether cut-off recordings can
+# be finalized. See spikes/03-recording/README.md.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'spikes/03-recording/**'
+      - '.github/workflows/spike-03.yml'
+
+jobs:
+  record:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      SPIKE_OS: ${{ runner.os }}
+      SPIKE_BROWSERS: chromium,chrome,msedge,firefox
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium firefox
+      - run: pnpm exec playwright test -c spikes/03-recording/playwright.config.ts
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: recordings-${{ runner.os }}
+          path: spikes/03-recording/out/
+          if-no-files-found: warn
+
+  analyze:
+    needs: record
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+          cache: pnpm
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: recordings-*
+          path: spikes/03-recording/out/
+          merge-multiple: true
+      - run: node spikes/03-recording/analyze.ts >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: spike-03-results
+          path: |
+            spikes/03-recording/out/results.json
+            spikes/03-recording/out/results.md
