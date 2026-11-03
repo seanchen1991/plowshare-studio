@@ -13,7 +13,7 @@ Build a free, open-source, browser-only tool to record a solo video podcast, com
 | Area | Choice |
 | --- | --- |
 | Language | TypeScript, strict mode |
-| UI | Svelte 5 with Vite, single-page app (no SvelteKit needed yet) |
+| UI | Svelte 5 with Vite, single-page app (no SvelteKit needed yet); light theme per [UI direction](UI%20direction.md) |
 | Media read/write and export | [Mediabunny](https://mediabunny.dev/guide/introduction) |
 | Storage | Origin Private File System (OPFS) for recordings, Session files and Project files |
 | Heavy work | Web Workers for chunk writing, finalizing, waveform peaks, silence detection and export |
