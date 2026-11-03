@@ -13,6 +13,17 @@ Throwaway investigation for [issue 03](../../.scratch/issues/03-spike-codecs-and
 
 Locally: `SPIKE_BROWSERS=chromium,firefox pnpm exec playwright test -c spikes/03-recording/playwright.config.ts`, then `node spikes/03-recording/analyze.ts`. (Media capture hangs inside Claude Code's sandbox; run it yourself or in CI.)
 
+## Local run (real camera, mic and hardware)
+
+Answers what CI can't: hardware encoding, dropped frames over a long take, and finalizing time.
+
+1. `pnpm dev`, then open http://localhost:5173/spikes/03-recording/local.html in Chrome (then Firefox).
+2. **Check** (hardware encoders) → **Allow camera and mic** → pick devices, the default format and **60 minutes** → **Start**. Keep the laptop plugged in and the tab visible.
+3. When it finishes, try seeking in the finished video, then **Copy report** and paste it back, along with which machine it was.
+4. **Delete spike files** frees the ~5 GB it used.
+
+Do a 1-minute take first to make sure everything works.
+
 ## Early finding (before the browser runs)
 
 Mediabunny's default copy mode (`'preferred'`) re-encodes a track whenever copying it would need any timestamp shift; WebM Opus audio hit this and, in Node, was dropped. With `copy: { mode: 'forced' }` both tracks are copied untouched, with identical timestamps. **Finalizing must use forced copy**, or in the browser it would silently re-encode the audio.
