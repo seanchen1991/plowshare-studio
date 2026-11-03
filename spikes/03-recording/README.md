@@ -28,15 +28,15 @@ Do a 1-minute take first to make sure everything works.
 
 Mediabunny's default copy mode (`'preferred'`) re-encodes a track whenever copying it would need any timestamp shift; WebM Opus audio hit this and, in Node, was dropped. With `copy: { mode: 'forced' }` both tracks are copied untouched, with identical timestamps. **Finalizing must use forced copy**, or in the browser it would silently re-encode the audio.
 
-## Results (CI run 41658796549, 2026-11-03)
+## Results (CI runs 41658796549 and 41662027169, 2026-11-03)
 
-Chrome, Edge, Playwright's Chromium (all 156) and Firefox 157, each on Linux, macOS and Windows runners, with fake devices. 129 recordings, each finalized full, cut at a chunk boundary, and cut mid-chunk.
+Chrome, Edge, Playwright's Chromium (all 156) and Firefox 157, each on Linux, macOS and Windows runners, with fake devices. 111 recordings, each finalized full, cut at a chunk boundary, and cut mid-chunk.
 
 ### Recommendation: keep WebM everywhere
 
 - **Every cut-off WebM finalized**, in every browser, codec and OS, cut at a boundary or mid-chunk: 0 failures. The finished files have a duration, decode with 0 errors (one stray error in one Firefox VP8 run), and seek. The boundary cut lost 0.1–0.2 s against the chunk's arrival time; mid-chunk cuts kept part of the next chunk.
 - **Raw `MediaRecorder` WebM has no duration** (`ffprobe` reports N/A) in every browser, so finalizing after every stop is required, as planned.
-- **Chromium's fragmented MP4 is not a crash-safe fallback.** It ignores the timeslice on every OS: one ~1 KB header chunk, then the whole take arrives at stop. A crash loses everything. Its files also carry non-monotonic timestamps (24 decode warnings in a 10 s clip, even uncut).
+- **Chromium's fragmented MP4 is not a crash-safe fallback.** It ignores the timeslice on every OS: one ~1 KB header chunk, then the whole take arrives at stop. A crash before stop loses everything (confirmed again in run 41662027169; whether a given cut test shows this depends only on whether the cut lands before that single data chunk). Its files also carry non-monotonic timestamps (24 decode warnings in a 10 s clip, even uncut).
 - **Finalize with `copy: { mode: 'forced' }`** (see the early finding above).
 
 ### Format support
