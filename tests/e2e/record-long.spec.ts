@@ -62,6 +62,7 @@ test(`records a ${minutes}-minute take without losing frames or audio @long`, as
 	Object.assign(report, { beeps: beeps.length, longestBeepGap });
 
 	await testInfo.attach('report.json', { body: JSON.stringify(report, null, 2), contentType: 'application/json' });
+	console.log(`Long take report: ${JSON.stringify(report)}`);
 
 	expect(Math.abs(duration - minutes * 60)).toBeLessThan(5);
 	expect(lostPercent).toBeLessThanOrEqual(0.1);
