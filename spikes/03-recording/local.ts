@@ -8,6 +8,8 @@ import {
 	Conversion,
 	EncodedPacketSink,
 	Input,
+	MkvOutputFormat,
+	Mp4OutputFormat,
 	Output,
 	StreamTarget,
 	WebMOutputFormat
@@ -183,18 +185,35 @@ el('start').onclick = async () => {
 
 	el('status').textContent = 'Finalizing…';
 	const rawFile = await rawHandle.getFile();
-	const finishedHandle = await dir.getFileHandle('finished.webm', { create: true });
-	const finishedWritable = await finishedHandle.createWritable();
 	const finalizeStarted = performance.now();
 	const input = new Input({ formats: ALL_FORMATS, source: new BlobSource(rawFile) });
-	const output = new Output({ format: new WebMOutputFormat(), target: new StreamTarget(finishedWritable, { chunked: true }) });
+	const inputFormat = (await input.getFormat()).name;
+	// Chrome writes H.264 as Matroska, which WebM can't hold; keep the same container family, or remux to MP4.
+	const finishAs = el<HTMLSelectElement>('finishAs').value;
+	const [outputFormat, extension] =
+		finishAs === 'mp4'
+			? [new Mp4OutputFormat(), 'mp4']
+			: /webm/i.test(inputFormat)
+				? [new WebMOutputFormat(), 'webm']
+				: [new MkvOutputFormat(), 'mkv'];
+	const finishedHandle = await dir.getFileHandle(`finished.${extension}`, { create: true });
+	const finishedWritable = await finishedHandle.createWritable();
+	const output = new Output({ format: outputFormat, target: new StreamTarget(finishedWritable, { chunked: true }) });
 	const conversion = await Conversion.init({ input, output, showWarnings: false, copy: { mode: 'forced' } });
 	conversion.onProgress = (p) => (el('status').textContent = `Finalizing… ${Math.round(p * 100)}%`);
 	const discardedTracks = conversion.discardedTracks.map((d) => `${d.track.type}:${d.reason}`);
-	if (conversion.isValid) await conversion.execute();
+	if (conversion.isValid && discardedTracks.length === 0) await conversion.execute();
 	await finishedWritable.close().catch(() => {});
 	const finalizeMs = Math.round(performance.now() - finalizeStarted);
 	input.dispose();
+	if (discardedTracks.length > 0) {
+		report.finalize = { ok: false, inputFormat, finishAs: extension, discardedTracks };
+		el('status').textContent = `Finalizing FAILED: dropped ${discardedTracks.join(', ')}. Copy the report and paste it back.`;
+		el<HTMLButtonElement>('copy').disabled = false;
+		el<HTMLButtonElement>('start').disabled = false;
+		show();
+		return;
+	}
 
 	el('status').textContent = 'Checking frames…';
 	const finishedFile = await finishedHandle.getFile();
@@ -237,8 +256,9 @@ el('start').onclick = async () => {
 		heapMBEvery30s: heap
 	};
 	report.finalize = {
-		valid: conversion.isValid,
-		discardedTracks,
+		ok: true,
+		inputFormat,
+		finishAs: extension,
 		ms: finalizeMs,
 		mbPerSecond: Number((rawFile.size / 1e6 / (finalizeMs / 1000)).toFixed(1)),
 		finishedMB: Math.round(finishedFile.size / 1e6),
@@ -255,7 +275,19 @@ el('start').onclick = async () => {
 		trackStats: videoStats
 	};
 
-	el<HTMLVideoElement>('finished').src = URL.createObjectURL(finishedFile);
+	const finished = el<HTMLVideoElement>('finished');
+	report.playback = await new Promise((done) => {
+		const timer = setTimeout(() => done({ playable: false, error: 'no metadata after 15 s' }), 15_000);
+		finished.onloadedmetadata = () => {
+			clearTimeout(timer);
+			done({ playable: true, duration: Number(finished.duration.toFixed(2)), width: finished.videoWidth, height: finished.videoHeight });
+		};
+		finished.onerror = () => {
+			clearTimeout(timer);
+			done({ playable: false, error: finished.error?.message || `media error ${finished.error?.code}` });
+		};
+		finished.src = URL.createObjectURL(finishedFile);
+	});
 	el('status').textContent = `Done: ${formatTime(duration)} finalized in ${(finalizeMs / 1000).toFixed(1)} s, ${missingFrames} frames missing.`;
 	el<HTMLButtonElement>('copy').disabled = false;
 	el<HTMLButtonElement>('start').disabled = false;

@@ -50,6 +50,8 @@ Chrome, Edge, Playwright's Chromium (all 156) and Firefox 157, each on Linux, ma
 
 So the brief's preference order (H.264 → VP9 → VP8) resolves to H.264 in Chromium browsers and VP8 in Firefox.
 
+**Chromium writes H.264 as Matroska, not WebM.** Asking for `video/webm;codecs=h264` (or `avc1`) gives `video/x-matroska;codecs=avc1,opus` in Chrome, Edge and Chromium on every OS. WebM can't hold H.264, so finalizing must keep the input's container family (Matroska in, Matroska out) or remux to MP4. Both work with a forced copy, and the finished `.mkv`, `.webm` and `.mp4` files all play and seek in Chromium, Chrome and Firefox (checked locally with the CI recordings). The first local run finalized into WebM and silently dropped the video track; the page now fails loudly on any dropped track.
+
 ### What this run could not answer
 
 - **Hardware encoding.** `mediaCapabilities.encodingInfo({ type: 'record' })` throws in Chromium ("not a valid enum value") and answers "unsupported" in Firefox for formats it records, so it's useless here. The right probe is WebCodecs `VideoEncoder.isConfigSupported` with `hardwareAcceleration: 'prefer-hardware'`, and CI runners have no GPU anyway: this needs a run on a real machine.
