@@ -33,7 +33,7 @@ Latest Chrome, Edge and Firefox on Windows, macOS and Linux. Safari is out of sc
 
 ### Start with these three issues
 
-1. **Spike: recovering cut-off WebM.** Check which codecs each browser's `MediaRecorder` supports (`isTypeSupported`), then confirm Mediabunny can remux a WebM file truncated mid-write, from both Chrome and Firefox, back to its last complete chunk. If this is unreliable, revisit WebM (Chrome's fragmented MP4 output is the fallback to evaluate) before building recovery.
+1. **Spike: recovering cut-off WebM.** Done: see `spikes/03-recording/README.md` and [ADR 0003](../adr/0003-record-in-webm-finish-h264-as-mp4.md). Cut-off WebM and Matroska files remux reliably in every browser; Chromium's MP4 recording is not crash-safe.
 2. **Test fixture.** A video file with an on-screen timecode and regular beeps, plus the Playwright setup that feeds it in as a fake camera and mic. It turns "nothing lost" and "in sync" into measurements.
 3. **Project scaffolding and CI.** Repo, stack above, LICENSE, README, GitHub Actions.
 
@@ -43,7 +43,8 @@ Latest Chrome, Edge and Firefox on Windows, macOS and Linux. Safari is out of sc
 - 3-2-1 countdown, start and stop, elapsed time.
 - Pressing record creates a **Session** holding one **Recording** for the host. After stop, the user returns straight to the record screen so they can record another take while the last one finalizes.
 - **Audio-only takes** are allowed: the same pipeline without the video track.
-- **Video:** request 1920×1080 at 30 fps and accept what the camera delivers; never upscale. 1080p records at 6 Mbps, 720p at about 3.5 Mbps; tell the user when the camera only provides 720p. Codec preference: H.264, then VP9, then VP8, whichever `MediaRecorder` supports first, always in WebM. Store the chosen codec in the Session file. Variable frame rate is accepted at capture; export produces constant frame rate.
+- **Video:** request 1920×1080 at 30 fps and accept what the camera delivers; never upscale. 1080p records at 6 Mbps, 720p at about 3.5 Mbps; tell the user when the camera only provides 720p. Codec preference: H.264, then VP9, then VP8, whichever `MediaRecorder` supports first. In practice that is H.264 in Chrome and Edge (recorded as Matroska) and VP8 in Firefox, also at 1080p (encoded in software; watch how it fares in real use). Record in WebM or Matroska and finish H.264 as MP4 ([ADR 0003](../adr/0003-record-in-webm-finish-h264-as-mp4.md)). Store the settings actually received, not those requested, in the Session file.
+- **Frame rate:** in the preview, measure the frames the camera actually delivers and warn when well below the request ("often low light or exposure"). During a take, count frames delivered (`track.stats` in Chromium; frames shown in the preview elsewhere) against frames recorded, store both with the Recording, and tell the user if a take lost a noticeable share. Variable frame rate is accepted at capture; export produces constant frame rate.
 - **Audio:** echo cancellation, noise suppression and automatic gain control **off** by default. A "Clean up audio (call-style processing)" toggle turns them on, remembered per device. Opus, 160 kbps, mono, 48 kHz.
 
 ### Writing to disk
@@ -59,7 +60,7 @@ Each Recording is in one state, shown in the library:
 
 - **Capturing**: in progress.
 - **Paused**: a device dropped or the computer slept; waiting for the user.
-- **Finalizing**: starts automatically on stop. A worker remuxes each raw Segment with Mediabunny into a finished, seekable file, with progress shown. The raw file is deleted only after the finished file checks out (its duration roughly matches the manifest).
+- **Finalizing**: starts automatically on stop. A worker remuxes each raw Segment with Mediabunny into a finished, seekable file (MP4 for H.264, WebM otherwise), copying tracks with `copy: { mode: 'forced' }` and never re-encoding, with progress shown. The raw file is deleted only after the finished file checks out: every input track is present and its duration roughly matches the manifest.
 - **Ready**: playable, renameable, downloadable, editable.
 - **Interrupted**: the browser died during Capturing or Finalizing. On load, offer **Recover**, which trims the raw file back to the last complete chunk in the manifest and then goes through Finalizing, the same path as a normal stop. Show what was saved, for example "Recovered 47:12 of about 47:15". Never recover automatically.
 
@@ -81,7 +82,7 @@ Each Recording is in one state, shown in the library:
 
 - Lists Sessions (shown as takes) with state, length, date and whether they are **Backed up**.
 - Play, rename, delete, download.
-- **Download** gives one finished file per Segment: `2026-11-02 Episode 1.webm`, or `… – part 1 of 2.webm` and so on when there are several. No zip. A Session is Backed up once every Segment has been downloaded. While persistence is refused, any take that isn't backed up shows a "not backed up" badge.
+- **Download** gives one finished file per Segment: `2026-11-02 Episode 1.mp4`, or `… – part 1 of 2.mp4` (`.webm` for Firefox takes) and so on when there are several. No zip. A Session is Backed up once every Segment has been downloaded. While persistence is refused, any take that isn't backed up shows a "not backed up" badge.
 
 ### Not in phase 1
 
@@ -95,7 +96,7 @@ A pause button the user presses, screen recording, markers during recording, an 
 - [ ] Memory use stays flat during a long recording.
 - [ ] A 10-minute take with the tab in the background loses nothing.
 - [ ] Unplugging the mic mid-take, then resuming, gives one Recording with two Segments, both playable, with the Capture gap recorded.
-- [ ] A 60-minute 1080p30 recording on an older laptop drops no more than an agreed number of frames (set the threshold during the spike).
+- [ ] A 60-minute 1080p30 recording in Chrome on an older laptop loses at most 0.5% of the frames the camera delivered (frames delivered minus frames in the file). Gaps from system stalls are reported, not failures. Automated long tests with fake devices hold a stricter line: at most 0.1% lost, and no gap over 200 ms after the first second.
 - [ ] Manual hardware checklist passes: USB mic unplugged mid-take, laptop lid closed and reopened mid-take, an older laptop.
 
 ## Phase 2: simple cutter
@@ -139,8 +140,8 @@ See [ADR 0001](../adr/0001-projects-are-ordered-sessions.md). Recordings are nev
       "video": { "codec": "avc", "width": 1920, "height": 1080, "fps": 30, "bitrate": 6000000 },
       "audio": { "codec": "opus", "channels": 1, "sampleRate": 48000, "bitrate": 160000, "processing": false },
       "segments": [
-        { "index": 1, "path": "sessions/ses_01/rec_01/seg-01.webm", "startUs": 0, "durationUs": 1334000000, "downloaded": true },
-        { "index": 2, "path": "sessions/ses_01/rec_01/seg-02.webm", "startUs": 1344000000, "durationUs": 1056000000, "downloaded": false }
+        { "index": 1, "path": "sessions/ses_01/rec_01/seg-01.mp4", "startUs": 0, "durationUs": 1334000000, "downloaded": true },
+        { "index": 2, "path": "sessions/ses_01/rec_01/seg-02.mp4", "startUs": 1344000000, "durationUs": 1056000000, "downloaded": false }
       ]
     }
   ]

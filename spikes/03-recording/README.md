@@ -58,3 +58,51 @@ So the brief's preference order (H.264 → VP9 → VP8) resolves to H.264 in Chr
 - **Real-device behavior.** Chrome's fake camera runs at 20 fps and its fake mic is stereo 44.1 kHz regardless of constraints; test-pattern video compresses to well under 6 Mbps. The app must store the settings it actually gets, not the ones it asked for.
 - **Finalize time for a 60-minute file and the dropped-frame threshold** need a real machine and a long take.
 - Browser versions in `support.json` come from Playwright's user-agent presets, not the real browsers; record `browser.version()` next time.
+
+## Local results
+
+### Chrome 156, M-series MacBook (macOS 26.6.2), 2026-11-03
+
+USB camera at 1080p30 and its mic (48 kHz stereo, all processing off), recorded as `video/webm;codecs=h264,opus` (Chrome actually writes Matroska), 2-second timeslice, finished as MP4.
+
+| | 1-minute take | 60-minute take |
+| --- | --- | --- |
+| Recorded | 78 s | 3,600 s (auto-stopped) |
+| Raw file | 60 MB | 2,771 MB in 1,765 chunks |
+| Average bitrate | 6.14 Mbps | 6.16 Mbps |
+| JS heap | ~34 MB, flat | 34 MB → 51 MB, in steps |
+| Finalize to MP4 | 167 MB/s | 11.6 s (239 MB/s) |
+| Frames: camera total / delivered / in file | 2,326 / 2,325 / 2,325 | 108,018 / 107,956 / 107,927 |
+| Lost by the recorder (delivered − in file) | 0 | 29 (0.027%) |
+| Lost overall (camera total − in file) | 1 (0.04%) | 91 (0.084%) |
+| Longest gap between frames | 68 ms | 184 ms |
+| Finished file plays and seeks | yes | yes, 3,599.53 s |
+
+- H.264 is the only hardware encoder WebCodecs reports on this machine.
+- The page's "missing frames" figure (1.06% here) sums every gap over 1.5 frame intervals, so it counts timestamp jitter, not lost frames; the file is only 59 frames short of 30 fps × duration. Use the camera's `track.stats` against frames in the file instead.
+- Finished MP4 is the same size as the raw file: forced copy re-muxes without re-encoding.
+- Chrome's chunks average 2.04 s against a 2,000 ms timeslice; the timeslice is a minimum, not a period.
+- A Pixel Buds Bluetooth mic opened at 16 kHz (headset profile). The app should warn when a mic's sample rate is that low.
+
+### Firefox 159, same machine and camera, 2026-11-03
+
+Records `video/webm;codecs=vp8,opus` only (VP8 in software); finished as WebM. Firefox reports no `track.stats` and no heap, so the page counts frames shown in the live preview (`requestVideoFrameCallback`) as the camera's delivery; in Chrome that count matched `track.stats` to within 4 frames a minute.
+
+| | 1 min | 10 min | 33 s | 1 min, camera reset |
+| --- | --- | --- | --- | --- |
+| Camera picture | normal | (not checked) | overexposed | normal |
+| Camera delivered (preview) | — | — | 645 (~20 fps) | 1,784 |
+| Frames in file | 1,786 | 13,416 (~22 fps) | 645 | 1,773 |
+| Gap at start | 415 ms max (position not recorded) | 489 ms | 607 ms | 430 ms |
+| Largest gap after the first second | — | 103 ms | 83 ms | 71 ms |
+| Finalize | 0.3 s | 1.8 s | 0.4 s | 0.3 s |
+
+- **The camera, not the recorder, lost the frames.** The overexposed run delivered ~20 fps and the file kept every frame; a Chrome run in between got a nearly black picture at a full 30 fps. Long exposures cap the frame rate, and the camera's auto-exposure had got stuck (camera settings persist in the device, and browsers can change them). Unplugging and replugging the camera fixed it.
+- **Firefox starts every take with a ~0.4–0.6 s gap** after the first frame (Chrome: ~0.1 s); after that the recorder keeps essentially every frame (1,773 in file vs 1,784 delivered, the difference being that first gap).
+- Firefox scales the camera to 1080p (`resizeMode: crop-and-scale`; Chrome: `none`) and records the camera mic in mono (Chrome: stereo); both 48 kHz.
+- Firefox honors the 2,000 ms timeslice exactly (30 chunks a minute).
+- WebCodecs in Firefox reports hardware H.264, which `MediaRecorder` can't use.
+
+**10 minutes at 1080p after the camera reset:** 17,665 frames delivered (preview), 17,545 in the file. Nine minutes were clean (file within 13 frames of the preview each minute), but one stretch from about 5:57 to 6:07 had repeated gaps of 0.5–1.1 s. The preview slowed in those minutes too (1,736 and 1,605 frames against ~1,790), so the whole browser stalled and the recorder lost more than the camera did (1,675 and 1,561). Of 120 frames lost by the recorder, nearly all fell in those 10 seconds. Finalize: 458 MB in 1.8 s.
+
+Software VP8 at 1080p keeps up on this machine but has little margin: a short burst of load costs frames. Chrome's hardware H.264 had no gap over 184 ms in an hour.

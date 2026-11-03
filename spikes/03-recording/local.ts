@@ -114,12 +114,13 @@ el('start').onclick = async () => {
 	el<HTMLButtonElement>('start').disabled = true;
 	const minutes = Number(el<HTMLSelectElement>('minutes').value);
 	const mimeType = el<HTMLSelectElement>('format').value;
+	const height = Number(el<HTMLSelectElement>('resolution').value);
 
 	const stream = await navigator.mediaDevices.getUserMedia({
 		video: {
 			deviceId: { exact: el<HTMLSelectElement>('cam').value },
-			width: { ideal: 1920 },
-			height: { ideal: 1080 },
+			width: { ideal: (height * 16) / 9 },
+			height: { ideal: height },
 			frameRate: { ideal: 30 }
 		},
 		audio: {
@@ -158,6 +159,16 @@ el('start').onclick = async () => {
 	const heap: number[] = [];
 	const started = performance.now();
 	recorder.start(timesliceMs);
+
+	// Frames the camera delivers, counted from the live preview each minute: Firefox has no track.stats,
+	// so this separates a slow camera from frames the encoder dropped.
+	const previewFramesPerMinute: number[] = [];
+	const countPreviewFrame = () => {
+		const minute = Math.floor((performance.now() - started) / 60_000);
+		previewFramesPerMinute[minute] = (previewFramesPerMinute[minute] ?? 0) + 1;
+		if (recorder.state === 'recording') preview.requestVideoFrameCallback(countPreviewFrame);
+	};
+	preview.requestVideoFrameCallback(countPreviewFrame);
 
 	const tick = setInterval(() => {
 		const elapsed = (performance.now() - started) / 1000;
@@ -227,6 +238,9 @@ el('start').onclick = async () => {
 	let missingFrames = 0;
 	let maxGapMs = 0;
 	let previous: number | null = null;
+	let firstFrameAt: number | null = null;
+	const largestGaps: { atSeconds: number; ms: number }[] = [];
+	const fileFramesPerMinute: number[] = [];
 	if (track) {
 		for await (const packet of new EncodedPacketSink(track).packets()) {
 			frames++;
@@ -235,12 +249,19 @@ el('start').onclick = async () => {
 				maxGapMs = Math.max(maxGapMs, gap * 1000);
 				if (gap > 1.5 * interval) {
 					gaps++;
+					largestGaps.push({ atSeconds: Number(previous.toFixed(2)), ms: Math.round(gap * 1000) });
 					missingFrames += Math.round(gap / interval) - 1;
 				}
 			}
+			firstFrameAt ??= packet.timestamp;
+			const minute = Math.floor(packet.timestamp / 60);
+			fileFramesPerMinute[minute] = (fileFramesPerMinute[minute] ?? 0) + 1;
 			previous = packet.timestamp;
 		}
 	}
+	largestGaps.sort((a, b) => b.ms - a.ms).splice(10);
+	const audioTrack = await check.getPrimaryAudioTrack();
+	const audioInFile = audioTrack && { sampleRate: audioTrack.sampleRate, channels: audioTrack.numberOfChannels };
 	check.dispose();
 
 	report.take = {
@@ -253,7 +274,8 @@ el('start').onclick = async () => {
 		chunks,
 		rawMB: Math.round(rawFile.size / 1e6),
 		averageMbps: Number(((rawFile.size * 8) / recordedSeconds / 1e6).toFixed(2)),
-		heapMBEvery30s: heap
+		heapMBEvery30s: heap,
+		audioInFile
 	};
 	report.finalize = {
 		ok: true,
@@ -272,6 +294,10 @@ el('start').onclick = async () => {
 		missingFrames,
 		missingPercent: Number(((missingFrames / Math.max(1, frames + missingFrames)) * 100).toFixed(3)),
 		maxGapMs: Math.round(maxGapMs),
+		firstFrameAtSeconds: firstFrameAt,
+		largestGaps,
+		previewFramesPerMinute: Array.from(previewFramesPerMinute, (n) => n ?? 0),
+		fileFramesPerMinute: Array.from(fileFramesPerMinute, (n) => n ?? 0),
 		trackStats: videoStats
 	};
 
