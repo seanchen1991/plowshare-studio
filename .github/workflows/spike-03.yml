@@ -18,7 +18,7 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     env:
-      SPIKE_OS: ${{ runner.os }}
+      SPIKE_OS: ${{ matrix.os }}
       SPIKE_BROWSERS: chromium,chrome,msedge,firefox
     steps:
       - uses: actions/checkout@v7
@@ -33,7 +33,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: recordings-${{ runner.os }}
+          name: recordings-${{ matrix.os }}
           path: spikes/03-recording/out/
           if-no-files-found: warn
 
