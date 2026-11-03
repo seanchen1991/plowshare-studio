@@ -9,9 +9,9 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { join } from 'node:path';
 import {
 	ALL_FORMATS,
+	BufferTarget,
 	Conversion,
 	FilePathSource,
-	FilePathTarget,
 	Input,
 	MkvOutputFormat,
 	Mp4OutputFormat,
@@ -72,19 +72,30 @@ function outputFormatFor(inputFormatName: string): OutputFormat {
 
 async function finalize(rawPath: string, finishedPath: string): Promise<Partial<VariantResult>> {
 	const started = performance.now();
+	const input = new Input({ formats: ALL_FORMATS, source: new FilePathSource(rawPath) });
 	try {
-		const input = new Input({ formats: ALL_FORMATS, source: new FilePathSource(rawPath) });
 		const format = await input.getFormat();
-		const output = new Output({ format: outputFormatFor(format.name), target: new FilePathTarget(finishedPath) });
+		// In memory, then to disk: cancelling a never-started Output doesn't close a FilePathTarget's handle.
+		const output = new Output({ format: outputFormatFor(format.name), target: new BufferTarget() });
 		const conversion = await Conversion.init({ input, output, showWarnings: false, copy: { mode: 'forced' } });
 		const discardedTracks = conversion.discardedTracks.map((d) => `${d.track.type}:${d.reason}`);
-		if (!conversion.isValid) return { finalize: 'failed', error: 'conversion invalid', discardedTracks };
+		if (!conversion.isValid) {
+			await output.cancel();
+			return { finalize: 'failed', error: 'conversion invalid', discardedTracks };
+		}
 		await conversion.execute();
+		writeFileSync(finishedPath, new Uint8Array(output.target.buffer!));
+		const finalizeMs = Math.round(performance.now() - started);
 		const check = new Input({ formats: ALL_FORMATS, source: new FilePathSource(finishedPath) });
-		const outDuration = await check.computeDuration();
-		return { finalize: 'ok', discardedTracks, finalizeMs: Math.round(performance.now() - started), outDuration };
+		try {
+			return { finalize: 'ok', discardedTracks, finalizeMs, outDuration: await check.computeDuration() };
+		} finally {
+			check.dispose();
+		}
 	} catch (error) {
 		return { finalize: 'failed', error: String(error).slice(0, 200) };
+	} finally {
+		input.dispose();
 	}
 }
 

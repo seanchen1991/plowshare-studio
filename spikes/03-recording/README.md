@@ -17,6 +17,31 @@ Locally: `SPIKE_BROWSERS=chromium,firefox pnpm exec playwright test -c spikes/03
 
 Mediabunny's default copy mode (`'preferred'`) re-encodes a track whenever copying it would need any timestamp shift; WebM Opus audio hit this and, in Node, was dropped. With `copy: { mode: 'forced' }` both tracks are copied untouched, with identical timestamps. **Finalizing must use forced copy**, or in the browser it would silently re-encode the audio.
 
-## Results
+## Results (CI run 41658796549, 2026-11-03)
 
-Filled in after the CI run.
+Chrome, Edge, Playwright's Chromium (all 156) and Firefox 157, each on Linux, macOS and Windows runners, with fake devices. 129 recordings, each finalized full, cut at a chunk boundary, and cut mid-chunk.
+
+### Recommendation: keep WebM everywhere
+
+- **Every cut-off WebM finalized**, in every browser, codec and OS, cut at a boundary or mid-chunk: 0 failures. The finished files have a duration, decode with 0 errors (one stray error in one Firefox VP8 run), and seek. The boundary cut lost 0.1–0.2 s against the chunk's arrival time; mid-chunk cuts kept part of the next chunk.
+- **Raw `MediaRecorder` WebM has no duration** (`ffprobe` reports N/A) in every browser, so finalizing after every stop is required, as planned.
+- **Chromium's fragmented MP4 is not a crash-safe fallback.** It ignores the timeslice on every OS: one ~1 KB header chunk, then the whole take arrives at stop. A crash loses everything. Its files also carry non-monotonic timestamps (24 decode warnings in a 10 s clip, even uncut).
+- **Finalize with `copy: { mode: 'forced' }`** (see the early finding above).
+
+### Format support
+
+| | Chrome / Edge / Chromium | Firefox |
+| --- | --- | --- |
+| WebM video | VP8, VP9, AV1, H.264 (`h264` and `avc1`) on all three OSes | **VP8 only** |
+| WebM audio-only (Opus) | ✅ | ✅ |
+| Ogg Opus | — | ✅ (Mediabunny can't copy it: `cannot_copy`) |
+| MP4 | H.264/VP9 + Opus everywhere; AAC on macOS and Windows only | — |
+
+So the brief's preference order (H.264 → VP9 → VP8) resolves to H.264 in Chromium browsers and VP8 in Firefox.
+
+### What this run could not answer
+
+- **Hardware encoding.** `mediaCapabilities.encodingInfo({ type: 'record' })` throws in Chromium ("not a valid enum value") and answers "unsupported" in Firefox for formats it records, so it's useless here. The right probe is WebCodecs `VideoEncoder.isConfigSupported` with `hardwareAcceleration: 'prefer-hardware'`, and CI runners have no GPU anyway: this needs a run on a real machine.
+- **Real-device behavior.** Chrome's fake camera runs at 20 fps and its fake mic is stereo 44.1 kHz regardless of constraints; test-pattern video compresses to well under 6 Mbps. The app must store the settings it actually gets, not the ones it asked for.
+- **Finalize time for a 60-minute file and the dropped-frame threshold** need a real machine and a long take.
+- Browser versions in `support.json` come from Playwright's user-agent presets, not the real browsers; record `browser.version()` next time.
