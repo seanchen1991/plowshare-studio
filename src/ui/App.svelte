@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { detectBrowserSupport } from '../lib/browser/support';
+	import Studio from './Studio.svelte';
 
 	const support = detectBrowserSupport(navigator.userAgent);
 
@@ -14,6 +15,7 @@
 	<h1>Plowshare Studio</h1>
 	{#if support.supported}
 		<p data-testid="home">Record your podcast right here in the browser.</p>
+		<Studio />
 	{:else}
 		<p data-testid="unsupported" role="alert">
 			{unsupportedMessages[support.reason]}

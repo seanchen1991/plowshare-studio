@@ -3,6 +3,10 @@ name: Long tests
 # Hour-long recordings and crash-recovery runs: too slow for every push.
 on:
   workflow_dispatch:
+    inputs:
+      minutes:
+        description: Length of the long recording test, in minutes
+        default: '60'
   schedule:
     - cron: '0 6 * * 1'
 
@@ -12,6 +16,7 @@ jobs:
     timeout-minutes: 180
     env:
       LONG_TESTS: '1'
+      LONG_TEST_MINUTES: ${{ inputs.minutes || '60' }}
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6

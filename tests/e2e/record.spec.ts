@@ -1,0 +1,63 @@
+import { expect, test } from '@playwright/test';
+import { fixtureSpec as s } from '../fixtures/spec.ts';
+import { opfsFileExists, recordTake, saveOpfsFile } from '../helpers/app.ts';
+import { detectBeeps } from '../helpers/beeps.ts';
+import { decodeAudio, probeDurationSeconds, streamCodecs } from '../helpers/media-file.ts';
+
+const seconds = 30;
+
+test('records a take, finalizes it and plays it back with seeking', async ({ page }, testInfo) => {
+	test.setTimeout(150_000);
+	await page.goto('/');
+	const session = await recordTake(page, seconds);
+
+	// The Session file follows the brief's shape.
+	expect(session.version).toBe(1);
+	expect(session.recordings).toHaveLength(1);
+	const recording = session.recordings[0]!;
+	expect(recording.state).toBe('ready');
+	expect(recording.participant.role).toBe('host');
+	expect(recording.video).toMatchObject({ width: s.width, height: s.height });
+	expect(recording.segments).toHaveLength(1);
+	const segment = recording.segments[0]!;
+	expect(segment.startUs).toBe(0);
+	expect(Math.abs(segment.durationUs! / 1e6 - seconds)).toBeLessThan(2);
+
+	// Finished as MP4 for H.264, WebM otherwise (ADR 0003); the raw file and manifest are gone.
+	expect(segment.path).toMatch(recording.video!.codec === 'avc' ? /seg-01\.mp4$/ : /seg-01\.webm$/);
+	expect(segment.rawPath).toBeNull();
+	expect(await opfsFileExists(page, `sessions/${session.id}/rec_01/seg-01.raw`)).toBe(false);
+	expect(await opfsFileExists(page, `sessions/${session.id}/rec_01/seg-01.manifest.jsonl`)).toBe(false);
+
+	// Frames delivered by the camera and frames in the file are both recorded.
+	expect(segment.frames!.delivered).toBeGreaterThan(0);
+	expect(segment.frames!.inFile).toBeGreaterThan(0);
+
+	// The file itself: both tracks, the right length, and a beep every second throughout.
+	const file = testInfo.outputPath('take' + segment.path!.slice(segment.path!.lastIndexOf('.')));
+	await saveOpfsFile(page, segment.path!, file);
+	expect(streamCodecs(file)).toHaveLength(2);
+	expect(Math.abs(probeDurationSeconds(file) - segment.durationUs! / 1e6)).toBeLessThan(0.5);
+	const sampleRate = 8000;
+	const beeps = detectBeeps(decodeAudio(file, sampleRate), sampleRate);
+	const duration = probeDurationSeconds(file);
+	expect(beeps.length).toBeGreaterThanOrEqual(Math.floor(duration) - 1);
+	expect(beeps[0]!.timeSeconds).toBeLessThan(1.5);
+	expect(duration - beeps.at(-1)!.timeSeconds).toBeLessThan(1.5);
+	for (let i = 1; i < beeps.length; i++) {
+		expect(Math.abs(beeps[i]!.timeSeconds - beeps[i - 1]!.timeSeconds - s.beepIntervalSeconds)).toBeLessThan(0.1);
+	}
+
+	// Plays in the library, with seeking.
+	await page.getByRole('button', { name: 'Play' }).click();
+	const player = page.getByTestId('player');
+	const seeked = await player.evaluate(async (video: HTMLVideoElement) => {
+		if (video.readyState < 1) await new Promise((done) => video.addEventListener('loadedmetadata', done, { once: true }));
+		const duration = video.duration;
+		video.currentTime = 20;
+		await new Promise((done) => video.addEventListener('seeked', done, { once: true }));
+		return { duration, currentTime: video.currentTime };
+	});
+	expect(Math.abs(seeked.duration - seconds)).toBeLessThan(2);
+	expect(Math.abs(seeked.currentTime - 20)).toBeLessThan(0.5);
+});
