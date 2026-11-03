@@ -11,7 +11,8 @@
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "fixture": "node scripts/make-fixture.ts --force"
   },
   "dependencies": {
     "mediabunny": "^1.65.0"

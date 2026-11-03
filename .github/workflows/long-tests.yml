@@ -19,6 +19,7 @@ jobs:
         with:
           node-version: lts/*
           cache: pnpm
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install --with-deps chromium firefox
       - run: pnpm test:e2e --pass-with-no-tests

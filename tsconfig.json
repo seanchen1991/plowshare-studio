@@ -5,10 +5,11 @@
 		"lib": ["es2022", "dom", "dom.iterable", "webworker"],
 		"types": ["node"],
 		"noEmit": true,
+		"allowImportingTsExtensions": true,
 		"noUncheckedIndexedAccess": true,
 		"allowJs": true,
 		"checkJs": true,
 		"isolatedModules": true
 	},
-	"include": ["src/**/*.ts", "src/**/*.svelte", "tests/**/*.ts", "*.config.ts", "svelte.config.js"]
+	"include": ["src/**/*.ts", "src/**/*.svelte", "tests/**/*.ts", "scripts/**/*.ts", "*.config.ts", "svelte.config.js"]
 }
