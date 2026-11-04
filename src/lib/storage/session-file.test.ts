@@ -8,6 +8,7 @@ import {
 	sessionState,
 	updateRecording,
 	updateSegment,
+	markInterrupted,
 	type AudioSettings,
 	type Session
 } from './session-file.ts';
@@ -93,6 +94,25 @@ describe('sessionState', () => {
 		const s = session();
 		const interrupted = { ...s.recordings[0]!, id: 'rec_02', state: 'interrupted' as const };
 		expect(sessionState({ ...s, recordings: [s.recordings[0]!, interrupted] })).toBe('interrupted');
+	});
+});
+
+describe('markInterrupted', () => {
+	const withState = (state: Session['recordings'][number]['state'], id = 'rec_01') => ({ ...session().recordings[0]!, id, state });
+
+	it('marks unfinished Recordings that nothing is working on', () => {
+		const s = { ...session(), recordings: [withState('capturing'), withState('finalizing', 'rec_02'), withState('paused', 'rec_03')] };
+		expect(markInterrupted(s, () => false).recordings.map((r) => r.state)).toEqual(['interrupted', 'interrupted', 'interrupted']);
+	});
+
+	it('leaves Recordings that are still running elsewhere', () => {
+		const s = { ...session(), recordings: [withState('capturing'), withState('finalizing', 'rec_02')] };
+		expect(markInterrupted(s, (id) => id === 'rec_01').recordings.map((r) => r.state)).toEqual(['capturing', 'interrupted']);
+	});
+
+	it('leaves Ready and Interrupted Recordings alone', () => {
+		const s = { ...session(), recordings: [withState('ready'), withState('interrupted', 'rec_02')] };
+		expect(markInterrupted(s, () => false)).toEqual(s);
 	});
 });
 

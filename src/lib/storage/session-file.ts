@@ -50,6 +50,8 @@ export interface Recording {
 	segments: Segment[];
 	/** Why Finalizing failed, if it did; the raw file is kept. */
 	finalizeError?: string;
+	/** Set when the Recording was recovered: how long capture ran before the interruption. */
+	recovery?: { expectedUs: number };
 }
 
 export interface Session {
@@ -143,6 +145,21 @@ export function sessionState(session: Session): RecordingState {
 		(least, r) => (stateOrder.indexOf(r.state) < stateOrder.indexOf(least) ? r.state : least),
 		'ready'
 	);
+}
+
+const unfinished: RecordingState[] = ['capturing', 'paused', 'finalizing'];
+
+/**
+ * Marks as Interrupted every unfinished Recording that nothing is working on:
+ * the browser died while it was Capturing, Paused or Finalizing.
+ */
+export function markInterrupted(session: Session, isRunning: (recordingId: string) => boolean): Session {
+	return {
+		...session,
+		recordings: session.recordings.map((r) =>
+			unfinished.includes(r.state) && !isRunning(r.id) ? { ...r, state: 'interrupted' } : r
+		)
+	};
 }
 
 /** Length of a Recording on the Session timeline, once its Segments have durations. */

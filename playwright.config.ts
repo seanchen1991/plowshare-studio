@@ -3,7 +3,7 @@ import { defineConfig, devices } from '@playwright/test';
 import { fixtureFiles } from './tests/fixtures/spec.ts';
 
 const port = 4173;
-// Tests tagged @long (hour-long recordings, crash runs) only run when LONG_TESTS is set.
+// Tests tagged @long (hour-long recordings) only run when LONG_TESTS is set.
 const longTests = !!process.env.LONG_TESTS;
 
 export default defineConfig({
@@ -34,6 +34,23 @@ export default defineConfig({
 						`--use-file-for-fake-video-capture=${resolve(fixtureFiles.video)}`,
 						`--use-file-for-fake-audio-capture=${resolve(fixtureFiles.audio)}`
 					]
+				}
+			}
+		},
+		{
+			// Only the specs that must hold in Firefox too; the camera and mic come from tests/helpers/fake-media.ts.
+			name: 'firefox',
+			testMatch: /recover\.spec\.ts/,
+			use: {
+				...devices['Desktop Firefox'],
+				launchOptions: {
+					firefoxUserPrefs: {
+						'media.navigator.streams.fake': true,
+						'media.navigator.permission.disabled': true,
+						// The stand-in mic is Web Audio, which must play without a click.
+						'media.autoplay.default': 0,
+						'media.autoplay.block-webaudio': false
+					}
 				}
 			}
 		}

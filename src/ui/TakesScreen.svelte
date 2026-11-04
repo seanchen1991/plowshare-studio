@@ -2,7 +2,11 @@
 	import type { Session } from '../lib/storage/session-file';
 	import TakeRow from './TakeRow.svelte';
 
-	let { sessions, progress }: { sessions: Session[]; progress: Record<string, number> } = $props();
+	let {
+		sessions,
+		progress,
+		onRecover
+	}: { sessions: Session[]; progress: Record<string, number>; onRecover: (session: Session) => void } = $props();
 </script>
 
 <div class="takes">
@@ -12,7 +16,7 @@
 	{:else}
 		<ul>
 			{#each sessions as session (session.id)}
-				<TakeRow {session} progress={progress[session.id]} />
+				<TakeRow {session} progress={progress[session.id]} onRecover={() => onRecover(session)} />
 			{/each}
 		</ul>
 	{/if}

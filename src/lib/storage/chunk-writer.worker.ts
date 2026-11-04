@@ -44,10 +44,15 @@ async function handle(request: ChunkWriterRequest) {
 			post({ type: 'written', chunks, bytes: rawOffset });
 			break;
 		}
+		case 'alive': {
+			if (manifest) append({ kind: 'alive', timestampUs: request.timestampUs });
+			break;
+		}
 		case 'close': {
 			append({ kind: 'state', state: request.state });
 			raw!.close();
 			manifest!.close();
+			manifest = null;
 			post({ type: 'closed', chunks, bytes: rawOffset });
 			break;
 		}

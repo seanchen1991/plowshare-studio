@@ -6,6 +6,7 @@ import type { RecordingState } from './session-file.ts';
 export type ChunkWriterRequest =
 	| { type: 'open'; rawPath: string; manifestPath: string; header: ManifestHeader }
 	| { type: 'chunk'; data: Blob; timestampUs: number }
+	| { type: 'alive'; timestampUs: number }
 	| { type: 'close'; state: RecordingState };
 
 export type ChunkWriterResponse =

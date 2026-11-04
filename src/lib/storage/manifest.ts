@@ -29,7 +29,13 @@ export interface ManifestStateChange {
 	state: RecordingState;
 }
 
-export type ManifestEntry = ManifestHeader | ManifestChunk | ManifestStateChange;
+/** Written about once a second while capturing, so recovery knows how long the take ran after its last chunk. */
+export interface ManifestAlive {
+	kind: 'alive';
+	timestampUs: number;
+}
+
+export type ManifestEntry = ManifestHeader | ManifestChunk | ManifestStateChange | ManifestAlive;
 
 export interface Manifest {
 	header: ManifestHeader;
@@ -39,6 +45,8 @@ export interface Manifest {
 	endOffset: number;
 	/** Arrival time of the last listed chunk, roughly the captured length. */
 	lastTimestampUs: number;
+	/** The last time capture was known to be running: how long the take was meant to be. */
+	lastAliveUs: number;
 }
 
 export function manifestLine(entry: ManifestEntry): string {
@@ -51,6 +59,7 @@ export function parseManifest(text: string): Manifest {
 	let header: ManifestHeader | null = null;
 	const chunks: ManifestChunk[] = [];
 	let state: RecordingState = 'capturing';
+	let lastAliveUs = 0;
 
 	for (const line of lines) {
 		let entry: ManifestEntry;
@@ -61,6 +70,7 @@ export function parseManifest(text: string): Manifest {
 		}
 		if (entry.kind === 'header') header = entry;
 		else if (entry.kind === 'state') state = entry.state;
+		else if (entry.kind === 'alive') lastAliveUs = Math.max(lastAliveUs, entry.timestampUs);
 		else if (entry.kind === 'chunk') {
 			const expected = chunks.length === 0 ? 0 : chunks.at(-1)!.offset + chunks.at(-1)!.bytes;
 			if (entry.offset !== expected) throw new Error(`Manifest chunk at ${entry.offset}, expected ${expected}`);
@@ -70,12 +80,14 @@ export function parseManifest(text: string): Manifest {
 
 	if (!header) throw new Error('Manifest has no header');
 	const last = chunks.at(-1);
+	const lastTimestampUs = last ? last.timestampUs : 0;
 	return {
 		header,
 		chunks,
 		state,
 		endOffset: last ? last.offset + last.bytes : 0,
-		lastTimestampUs: last ? last.timestampUs : 0
+		lastTimestampUs,
+		lastAliveUs: Math.max(lastAliveUs, lastTimestampUs)
 	};
 }
 

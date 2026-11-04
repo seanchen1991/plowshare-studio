@@ -1,6 +1,6 @@
 name: Long tests
 
-# Hour-long recordings and crash-recovery runs: too slow for every push.
+# Hour-long recordings: too slow for every push.
 on:
   workflow_dispatch:
     inputs:

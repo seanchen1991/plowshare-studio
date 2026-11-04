@@ -40,6 +40,25 @@ describe('parseManifest', () => {
 		expect(manifest.lastTimestampUs).toBe(0);
 	});
 
+	it('knows capture ran past the last chunk from alive lines', () => {
+		const manifest = parseManifest(
+			lines(
+				header,
+				{ kind: 'alive', timestampUs: 1_000_000 },
+				{ kind: 'chunk', offset: 0, bytes: 100, timestampUs: 2_000_000 },
+				{ kind: 'alive', timestampUs: 2_000_000 },
+				{ kind: 'alive', timestampUs: 3_000_000 }
+			)
+		);
+		expect(manifest.lastTimestampUs).toBe(2_000_000);
+		expect(manifest.lastAliveUs).toBe(3_000_000);
+	});
+
+	it('falls back to the last chunk when there are no alive lines', () => {
+		const manifest = parseManifest(lines(header, { kind: 'chunk', offset: 0, bytes: 100, timestampUs: 2_000_000 }));
+		expect(manifest.lastAliveUs).toBe(2_000_000);
+	});
+
 	it('ignores a last line cut off by a crash', () => {
 		const text = lines(header, { kind: 'chunk', offset: 0, bytes: 100, timestampUs: 2_000_000 }) + '{"kind":"chunk","off';
 		const manifest = parseManifest(text);

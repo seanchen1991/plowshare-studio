@@ -1,9 +1,9 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { detectBrowserSupport } from '../lib/browser/support';
-	import { finalizeRecording } from '../lib/media/finalize';
-	import type { Session } from '../lib/storage/session-file';
-	import { listSessions } from '../lib/storage/sessions';
+	import { finalizeRecording, recoverRecording } from '../lib/media/finalize';
+	import { sessionState, type Session } from '../lib/storage/session-file';
+	import { checkSessionsOnLaunch, listSessions } from '../lib/storage/sessions';
 	import RecordScreen from './RecordScreen.svelte';
 	import SegmentedControl from './SegmentedControl.svelte';
 	import TakesScreen from './TakesScreen.svelte';
@@ -30,19 +30,29 @@
 	let lastTakeId = $state<string | null>(null);
 
 	const lastTake = $derived(sessions.find((s) => s.id === lastTakeId) ?? null);
+	const interrupted = $derived(sessions.filter((s) => sessionState(s) === 'interrupted').length);
 
 	async function refresh() {
 		sessions = await listSessions();
 	}
 
 	onMount(() => {
-		if (support.supported) void refresh();
+		if (support.supported) void checkSessionsOnLaunch().finally(refresh);
 	});
 
 	async function finalize(session: Session) {
 		const recordingId = session.recordings[0]!.id;
 		progress[session.id] = 0;
 		await finalizeRecording(session.id, recordingId, (p) => (progress[session.id] = p));
+		delete progress[session.id];
+		await refresh();
+	}
+
+	async function recover(session: Session) {
+		const recordingId = session.recordings[0]!.id;
+		progress[session.id] = 0;
+		sessions = sessions.map((s) => (s.id === session.id ? { ...s, recordings: s.recordings.map((r) => ({ ...r, state: 'finalizing' })) } : s));
+		await recoverRecording(session.id, recordingId, (p) => (progress[session.id] = p));
 		delete progress[session.id];
 		await refresh();
 	}
@@ -57,6 +67,12 @@
 	</header>
 	<!-- Both screens stay mounted, so a take keeps recording while Takes is open. -->
 	<main data-testid="home">
+		{#if interrupted > 0 && screen === 'record'}
+			<p class="interrupted" role="alert" data-testid="interrupted-notice">
+				{interrupted === 1 ? 'A take was' : `${interrupted} takes were`} cut off when the browser closed.
+				<button type="button" onclick={() => (screen = 'takes')}>Recover in Takes</button>
+			</p>
+		{/if}
 		<section aria-label="Record" hidden={screen !== 'record'}>
 			<RecordScreen
 				active={screen === 'record'}
@@ -75,7 +91,7 @@
 			/>
 		</section>
 		<section aria-label="Takes" hidden={screen !== 'takes'}>
-			<TakesScreen {sessions} {progress} />
+			<TakesScreen {sessions} {progress} onRecover={recover} />
 		</section>
 	</main>
 {:else}
@@ -112,6 +128,28 @@
 	}
 	main {
 		padding: 32px 24px 64px;
+	}
+	.interrupted {
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: center;
+		gap: 4px 12px;
+		max-width: 960px;
+		margin: -12px auto 20px;
+		padding: 8px 12px;
+		border-radius: var(--radius-panel);
+		background: var(--problem-bg);
+		color: var(--problem-fg);
+		font-size: var(--text-small);
+	}
+	.interrupted button {
+		border: 0;
+		background: none;
+		color: inherit;
+		font: inherit;
+		font-weight: 600;
+		text-decoration: underline;
+		cursor: pointer;
 	}
 	.unsupported {
 		display: grid;

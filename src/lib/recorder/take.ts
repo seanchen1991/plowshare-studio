@@ -6,9 +6,12 @@ import { audioBitsPerSecond, videoBitsPerSecond } from '../media/capture.ts';
 import { chooseMimeType, codecsFromMimeType } from '../media/formats.ts';
 import type { ChunkWriterRequest, ChunkWriterResponse } from '../storage/chunk-writer.protocol.ts';
 import { newSession, updateRecording, updateSegment, type AudioSettings, type Session, type VideoSettings } from '../storage/session-file.ts';
+import { holdRecording } from '../storage/recording-lock.ts';
 import { changeSession, createSession } from '../storage/sessions.ts';
 
 export const timesliceMs = 2000;
+/** How often the manifest notes that capture is still running. */
+const aliveEveryMs = 1000;
 
 export interface Take {
 	session: Session;
@@ -45,9 +48,11 @@ export async function startTake({ stream, preview, onWritten, onError }: TakeOpt
 		video: videoTrack ? videoSettings(videoTrack, codecs.video, recorder) : null,
 		audio: audioSettings(audioTrack, codecs.audio, recorder)
 	});
-	await createSession(session);
 	const recording = session.recordings[0]!;
 	const segment = recording.segments[0]!;
+	// Held until stop, so a launch in another tab doesn't take this Recording for a crashed one.
+	const release = await holdRecording(session.id, recording.id);
+	await createSession(session);
 
 	const worker = new Worker(new URL('../storage/chunk-writer.worker.ts', import.meta.url), { type: 'module' });
 	const send = (request: ChunkWriterRequest) => worker.postMessage(request);
@@ -83,9 +88,9 @@ export async function startTake({ stream, preview, onWritten, onError }: TakeOpt
 
 	const frames = countFrames(videoTrack, preview);
 	const started = performance.now();
-	recorder.ondataavailable = (event) => {
-		send({ type: 'chunk', data: event.data, timestampUs: Math.round((performance.now() - started) * 1000) });
-	};
+	const sinceStartUs = () => Math.round((performance.now() - started) * 1000);
+	recorder.ondataavailable = (event) => send({ type: 'chunk', data: event.data, timestampUs: sinceStartUs() });
+	const alive = setInterval(() => send({ type: 'alive', timestampUs: sinceStartUs() }), aliveEveryMs);
 	const recorderStopped = new Promise<void>((resolve) => (recorder.onstop = () => resolve()));
 	recorder.start(timesliceMs);
 
@@ -94,6 +99,7 @@ export async function startTake({ stream, preview, onWritten, onError }: TakeOpt
 		async stop() {
 			if (recorder.state !== 'inactive') recorder.stop();
 			await recorderStopped;
+			clearInterval(alive);
 			const delivered = frames.stop();
 			if (!failure) send({ type: 'close', state: 'finalizing' });
 			await workerClosed;
@@ -106,6 +112,7 @@ export async function startTake({ stream, preview, onWritten, onError }: TakeOpt
 					}))
 				)
 			);
+			release();
 			return session;
 		}
 	};

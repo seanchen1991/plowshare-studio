@@ -7,7 +7,7 @@
 	import { formatDuration } from './format';
 
 	/** One Session in a list of takes; `progress` is Finalizing's, when running. */
-	let { session, progress }: { session: Session; progress?: number } = $props();
+	let { session, progress, onRecover }: { session: Session; progress?: number; onRecover?: () => void } = $props();
 
 	let playerUrl = $state<string | null>(null);
 
@@ -15,6 +15,7 @@
 	const recording = $derived(session.recordings[0]);
 	const durationUs = $derived(recording ? recordingDurationUs(recording) : null);
 	const failed = $derived(session.recordings.find((r) => r.finalizeError)?.finalizeError);
+	const recovery = $derived(recording?.recovery);
 
 	async function play() {
 		const path = recording?.segments[0]?.path;
@@ -40,10 +41,24 @@
 	<span class="actions">
 		{#if takeState === 'ready'}
 			<Button onclick={play}>Play</Button>
+		{:else if takeState === 'interrupted' && onRecover}
+			<Button variant="primary" onclick={onRecover}>Recover</Button>
 		{/if}
 	</span>
-	{#if failed}
+	{#if takeState === 'interrupted'}
+		<p class="problem" role="alert" data-testid="interrupted">
+			{#if failed}
+				Couldn't recover this take: {failed}.
+			{:else}
+				The browser closed during this take. Recover saves everything up to the last few seconds.
+			{/if}
+		</p>
+	{:else if failed}
 		<p class="problem" role="alert">Couldn't finish this take: {failed}. The raw recording is kept.</p>
+	{:else if takeState === 'ready' && recovery && durationUs !== null}
+		<p class="recovered" data-testid="recovered">
+			Recovered {formatDuration(durationUs)} of about {formatDuration(Math.max(recovery.expectedUs, durationUs))}
+		</p>
 	{/if}
 	{#if playerUrl}
 		<!-- svelte-ignore a11y_media_has_caption -->
@@ -82,6 +97,7 @@
 		gap: 6px;
 	}
 	.problem,
+	.recovered,
 	video {
 		grid-column: 1 / -1;
 		margin-top: 10px;
@@ -91,6 +107,10 @@
 		border-radius: var(--radius-panel);
 		background: var(--problem-bg);
 		color: var(--problem-fg);
+		font-size: var(--text-small);
+	}
+	.recovered {
+		color: var(--muted);
 		font-size: var(--text-small);
 	}
 	video {
