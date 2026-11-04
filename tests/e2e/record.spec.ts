@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import { fixtureSpec as s } from '../fixtures/spec.ts';
 import { opfsFileExists, recordTake, saveOpfsFile } from '../helpers/app.ts';
 import { detectBeeps } from '../helpers/beeps.ts';
-import { decodeAudio, probeDurationSeconds, streamCodecs } from '../helpers/media-file.ts';
+import { decodeAudio, probeDurationSeconds, probeStreams, streamCodecs } from '../helpers/media-file.ts';
 
 const seconds = 30;
 
@@ -37,6 +37,19 @@ test('records a take, finalizes it and plays it back with seeking', async ({ pag
 	const file = testInfo.outputPath('take' + segment.path!.slice(segment.path!.lastIndexOf('.')));
 	await saveOpfsFile(page, segment.path!, file);
 	expect(streamCodecs(file)).toHaveLength(2);
+
+	// Capture quality: the file holds what the Session file says, at the fixture's 720p.
+	const streams = probeStreams(file);
+	const video = streams.find((st) => st.codec_type === 'video')!;
+	const audio = streams.find((st) => st.codec_type === 'audio')!;
+	const ffprobeNames: Record<string, string> = { avc: 'h264', vp9: 'vp9', vp8: 'vp8' };
+	expect(video.codec_name).toBe(ffprobeNames[recording.video!.codec]);
+	expect(video).toMatchObject({ width: s.width, height: s.height });
+	expect(recording.video!.bitrate).toBe(3_500_000);
+	expect(audio.codec_name).toBe('opus');
+	expect(audio.channels).toBe(recording.audio.channels);
+	expect(Number(audio.sample_rate)).toBe(recording.audio.sampleRate);
+	expect(recording.audio).toMatchObject({ codec: 'opus', sampleRate: 48000, bitrate: 160_000, processing: false });
 	expect(Math.abs(probeDurationSeconds(file) - segment.durationUs! / 1e6)).toBeLessThan(0.5);
 	const sampleRate = 8000;
 	const beeps = detectBeeps(decodeAudio(file, sampleRate), sampleRate);
@@ -60,4 +73,14 @@ test('records a take, finalizes it and plays it back with seeking', async ({ pag
 	});
 	expect(Math.abs(seeked.duration - seconds)).toBeLessThan(2);
 	expect(Math.abs(seeked.currentTime - 20)).toBeLessThan(0.5);
+});
+
+test('tells the user when the camera only provides 720p', async ({ page }) => {
+	await page.goto('/');
+	await page.getByRole('button', { name: 'Record' }).click();
+	await expect(page.getByTestId('resolution-notice')).toHaveText(
+		`Your camera only provides ${s.height}p, so this take records at ${s.height}p.`
+	);
+	await page.getByRole('button', { name: 'Stop' }).click();
+	await expect(page.getByTestId('resolution-notice')).toBeHidden();
 });

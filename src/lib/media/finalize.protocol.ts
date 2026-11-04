@@ -12,6 +12,8 @@ export interface FinalizeResult {
 	durationUs: number;
 	/** Frames in the finished file; null for audio-only. */
 	framesInFile: number | null;
+	/** The audio track as recorded; browsers don't always report these while capturing. */
+	audio: { channels: number; sampleRate: number } | null;
 }
 
 export type FinalizeResponse =

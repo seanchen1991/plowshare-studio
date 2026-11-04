@@ -3,7 +3,7 @@
 // file and manifest deleted.
 
 import { removeFile } from '../storage/opfs.ts';
-import { segmentPaths, updateRecording, updateSegment, type Session } from '../storage/session-file.ts';
+import { segmentPaths, updateRecording, updateSegment, type Recording, type Session } from '../storage/session-file.ts';
 import { changeSession, loadSession } from '../storage/sessions.ts';
 import type { FinalizeRequest, FinalizeResponse, FinalizeResult } from './finalize.protocol.ts';
 
@@ -43,7 +43,7 @@ export async function finalizeRecording(
 			);
 			await changeSession(sessionId, (session) =>
 				updateRecording(session, recordingId, (r) =>
-					updateSegment(r, segment.index, (s) => ({
+					updateSegment(withRecordedAudio(r, result), segment.index, (s) => ({
 						...s,
 						path: result.path,
 						durationUs: result.durationUs,
@@ -70,4 +70,10 @@ export async function finalizeRecording(
 			segments: r.segments.map((seg) => (seg.path ? { ...seg, rawPath: null, manifestPath: null } : seg))
 		}))
 	);
+}
+
+/** What the file holds is the truth: Chrome may open a mic in stereo, and Firefox reports no sample rate. */
+function withRecordedAudio(recording: Recording, result: FinalizeResult): Recording {
+	if (!result.audio) return recording;
+	return { ...recording, audio: { ...recording.audio, channels: result.audio.channels, sampleRate: result.audio.sampleRate } };
 }

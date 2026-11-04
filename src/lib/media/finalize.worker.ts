@@ -73,7 +73,11 @@ async function check(path: string, expectedTracks: number, manifestUs: number): 
 			framesInFile = 0;
 			for await (const _ of new EncodedPacketSink(video).packets(undefined, undefined, { metadataOnly: true })) framesInFile++;
 		}
-		return { path, durationUs, framesInFile };
+		const audioTrack = await finished.getPrimaryAudioTrack();
+		const audio = audioTrack
+			? { channels: await audioTrack.getNumberOfChannels(), sampleRate: await audioTrack.getSampleRate() }
+			: null;
+		return { path, durationUs, framesInFile, audio };
 	} finally {
 		finished.dispose();
 	}

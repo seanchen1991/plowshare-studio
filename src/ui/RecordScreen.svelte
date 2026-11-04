@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
+	import { captureConstraints, resolutionNotice } from '../lib/media/capture';
 	import { startTake, type Take } from '../lib/recorder/take';
 	import type { Session } from '../lib/storage/session-file';
 	import TakeRow from './TakeRow.svelte';
@@ -24,6 +25,7 @@
 	let error = $state<string | null>(null);
 	let elapsedMs = $state(0);
 	let writtenBytes = $state(0);
+	let notice = $state<string | null>(null);
 	let preview = $state<HTMLVideoElement>();
 
 	let take: Take | null = null;
@@ -36,7 +38,7 @@
 		error = null;
 		phase = 'starting';
 		try {
-			stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+			stream = await navigator.mediaDevices.getUserMedia(captureConstraints());
 			preview!.srcObject = stream;
 			await preview!.play();
 			take = await startTake({
@@ -59,6 +61,7 @@
 		writtenBytes = 0;
 		ticker = setInterval(() => (elapsedMs = performance.now() - started), 250);
 		phase = 'capturing';
+		notice = resolutionNotice(take.session.recordings[0]!.video);
 		onStarted(take.session);
 	}
 
@@ -69,6 +72,7 @@
 		const session = await take.stop();
 		take = null;
 		releaseDevices();
+		notice = null;
 		phase = 'idle';
 		onStopped(session);
 	}
@@ -110,6 +114,10 @@
 			</button>
 		{/if}
 	</div>
+
+	{#if notice}
+		<p class="notice" data-testid="resolution-notice">{notice}</p>
+	{/if}
 
 	{#if error}
 		<p class="error" role="alert">{error}</p>
@@ -232,6 +240,13 @@
 	}
 	.saved {
 		color: var(--muted);
+		font-size: var(--text-small);
+	}
+	.notice {
+		padding: 8px 12px;
+		border-radius: var(--radius-panel);
+		background: var(--working-bg);
+		color: var(--working-fg);
 		font-size: var(--text-small);
 	}
 	.error {

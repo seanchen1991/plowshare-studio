@@ -16,6 +16,25 @@ export function streamCodecs(file: string): string[] {
 	return out.toString().trim().split('\n');
 }
 
+export interface ProbedStream {
+	codec_type: 'video' | 'audio';
+	codec_name: string;
+	width?: number;
+	height?: number;
+	channels?: number;
+	sample_rate?: string;
+}
+
+export function probeStreams(file: string): ProbedStream[] {
+	const out = run('ffprobe', [
+		'-v', 'error',
+		'-show_entries', 'stream=codec_type,codec_name,width,height,channels,sample_rate',
+		'-of', 'json',
+		file
+	]);
+	return JSON.parse(out.toString()).streams;
+}
+
 /** The first audio track as mono samples. A low sample rate keeps hour-long files small; the beeps are 1 and 2 kHz. */
 export function decodeAudio(file: string, sampleRate = 8000): Float32Array {
 	const out = run('ffmpeg', ['-v', 'error', '-i', file, '-map', '0:a:0', '-ac', '1', '-ar', String(sampleRate), '-f', 'f32le', '-']);

@@ -2,6 +2,7 @@
 // chunk-writer worker, which writes it to the Segment's raw file in OPFS. No
 // chunk is kept in memory here.
 
+import { audioBitsPerSecond, videoBitsPerSecond } from '../media/capture.ts';
 import { chooseMimeType, codecsFromMimeType } from '../media/formats.ts';
 import type { ChunkWriterRequest, ChunkWriterResponse } from '../storage/chunk-writer.protocol.ts';
 import { newSession, updateRecording, updateSegment, type AudioSettings, type Session, type VideoSettings } from '../storage/session-file.ts';
@@ -28,9 +29,15 @@ type VideoTrackWithStats = MediaStreamTrack & { stats?: { deliveredFrames: numbe
 
 export async function startTake({ stream, preview, onWritten, onError }: TakeOptions): Promise<Take> {
 	const mimeType = chooseMimeType((type) => MediaRecorder.isTypeSupported(type));
-	const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : {});
 	const videoTrack = stream.getVideoTracks()[0] as VideoTrackWithStats | undefined;
 	const audioTrack = stream.getAudioTracks()[0];
+	// The bitrate follows the resolution the camera actually delivers.
+	const height = videoTrack?.getSettings().height ?? 0;
+	const recorder = new MediaRecorder(stream, {
+		...(mimeType ? { mimeType } : {}),
+		...(videoTrack ? { videoBitsPerSecond: videoBitsPerSecond(height) } : {}),
+		audioBitsPerSecond
+	});
 	const codecs = codecsFromMimeType(recorder.mimeType || mimeType);
 
 	let session = newSession({
