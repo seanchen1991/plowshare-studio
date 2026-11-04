@@ -96,12 +96,18 @@
 			});
 			if (mine !== generation) return opened.getTracks().forEach((t) => t.stop());
 			stream = opened;
-			// Without a saved mic, the one the browser picked may have "Clean up audio" on from before.
-			const actualMic = stream.getAudioTracks()[0]?.getSettings().deviceId;
-			if (actualMic && actualMic !== prefs.micId && prefs.cleanUpAudio[actualMic]) await replaceMic(actualMic);
-			await attach();
+			// Browsers treat a preferred device as a hint, and before access is allowed they
+			// can't match it at all. Now that the devices are listed, insist on the saved ones.
 			lists = await listDevices();
+			const has = (devices: MediaDeviceInfo[], id?: string) => !!id && devices.some((d) => d.deviceId === id);
+			const actualCamera = stream.getVideoTracks()[0]?.getSettings().deviceId;
+			const actualMic = stream.getAudioTracks()[0]?.getSettings().deviceId;
+			if (has(lists.cameras, prefs.cameraId) && actualCamera !== prefs.cameraId) await replaceCamera(prefs.cameraId!);
+			if (has(lists.mics, prefs.micId) && actualMic !== prefs.micId) await replaceMic(prefs.micId!);
+			// Without a saved mic, the one the browser picked may have "Clean up audio" on from before.
+			else if (actualMic && !prefs.micId && prefs.cleanUpAudio[actualMic]) await replaceMic(actualMic);
 			if (mine !== generation) return;
+			await attach();
 			devicesState = 'on';
 		} catch (e) {
 			if (mine !== generation) return;
@@ -136,6 +142,12 @@
 		stopWatching = watchFrameRate(preview!, (rate) => (fps = rate));
 	}
 
+	async function replaceCamera(id: string) {
+		stream!.getVideoTracks().forEach((t) => t.stop());
+		const track = await openCamera(id);
+		stream = new MediaStream([track, ...stream!.getAudioTracks()]);
+	}
+
 	async function replaceMic(id: string) {
 		stream!.getAudioTracks().forEach((t) => t.stop());
 		const track = await openMic(id, prefs.cleanUpAudio[id] ?? false);
@@ -155,11 +167,7 @@
 	function chooseCamera(id: string) {
 		prefs.cameraId = id;
 		saveDevicePrefs(prefs);
-		void changeDevice(async () => {
-			stream!.getVideoTracks().forEach((t) => t.stop());
-			const track = await openCamera(id);
-			stream = new MediaStream([track, ...stream!.getAudioTracks()]);
-		});
+		void changeDevice(() => replaceCamera(id));
 	}
 
 	function chooseMic(id: string) {

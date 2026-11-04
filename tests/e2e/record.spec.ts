@@ -54,8 +54,9 @@ test('records a take, finalizes it and plays it back with seeking', async ({ pag
 	expect(Math.abs(probeDurationSeconds(file) - segment.durationUs! / 1e6)).toBeLessThan(0.5);
 	// Not mirrored: the fixture's frame counter reads correctly, 10 s apart.
 	const loopFrames = s.loopSeconds * s.fps;
-	const counted = (readFrameCode(greyFrame(file, 15)) - readFrameCode(greyFrame(file, 5)) + loopFrames) % loopFrames;
-	expect(Math.abs(counted - 10 * s.fps)).toBeLessThan(15);
+	const codes = [readFrameCode(greyFrame(file, 5)), readFrameCode(greyFrame(file, 15))];
+	const counted = (codes[1]! - codes[0]! + loopFrames) % loopFrames;
+	expect(Math.abs(counted - 10 * s.fps), `frame codes ${codes.join(', ')}`).toBeLessThan(15);
 
 	const sampleRate = 8000;
 	const beeps = detectBeeps(decodeAudio(file, sampleRate), sampleRate);

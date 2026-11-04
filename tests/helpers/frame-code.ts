@@ -9,11 +9,14 @@ const boxWidth = 60;
 const boxHeight = 40;
 const stripY = s.height - boxHeight - 20;
 
-/** The frame at `timeSeconds` as 8-bit grey pixels, row by row. */
+/**
+ * The frame at `timeSeconds` as 8-bit grey pixels, row by row. Seeks after
+ * decoding (slow but exact): seeking the input can land on the first frame.
+ */
 export function greyFrame(file: string, timeSeconds: number): Buffer {
 	return execFileSync(
 		'ffmpeg',
-		['-v', 'error', '-ss', String(timeSeconds), '-i', file, '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'gray', '-'],
+		['-v', 'error', '-i', file, '-ss', String(timeSeconds), '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'gray', '-'],
 		{ maxBuffer: 64 * 1024 * 1024 }
 	);
 }

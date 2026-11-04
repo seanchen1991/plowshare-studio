@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { VideoSettings } from '../storage/session-file.ts';
-import { captureConstraints, resolutionNotice, videoBitsPerSecond } from './capture.ts';
+import { audioConstraints, captureConstraints, resolutionNotice, videoBitsPerSecond, videoConstraints } from './capture.ts';
 
 const video = (height: number): VideoSettings => ({ codec: 'avc', width: (height * 16) / 9, height, fps: 30, bitrate: null });
 
@@ -17,6 +17,11 @@ describe('captureConstraints', () => {
 		const constraints = captureConstraints({ cameraId: 'cam', micId: 'mic' });
 		expect(constraints.video).toMatchObject({ deviceId: { ideal: 'cam' } });
 		expect(constraints.audio).toMatchObject({ deviceId: { ideal: 'mic' } });
+	});
+
+	it('insists on a device the user has just picked', () => {
+		expect(videoConstraints('cam', true)).toMatchObject({ deviceId: { exact: 'cam' } });
+		expect(audioConstraints('mic', false, true)).toMatchObject({ deviceId: { exact: 'mic' } });
 	});
 
 	it('turns call-style processing on only when asked to clean up audio', () => {

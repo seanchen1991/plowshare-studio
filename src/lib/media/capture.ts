@@ -4,6 +4,7 @@
 import type { VideoSettings } from '../storage/session-file.ts';
 
 export interface CaptureChoice {
+	/** Preferred devices; the browser may pick another if they are gone. */
 	cameraId?: string;
 	micId?: string;
 	/** The browser's echo cancellation, noise suppression and automatic gain; off unless chosen. */
@@ -14,9 +15,9 @@ export interface CaptureChoice {
  * 1080p at 30 fps if the camera has it; `ideal` means the browser falls back to
  * the closest the camera offers instead of failing, and it never upscales.
  */
-export function videoConstraints(cameraId?: string): MediaTrackConstraints {
+export function videoConstraints(cameraId?: string, exact = false): MediaTrackConstraints {
 	return {
-		...(cameraId ? { deviceId: { ideal: cameraId } } : {}),
+		...(cameraId ? { deviceId: exact ? { exact: cameraId } : { ideal: cameraId } } : {}),
 		width: { ideal: 1920 },
 		height: { ideal: 1080 },
 		frameRate: { ideal: 30 }
@@ -27,9 +28,9 @@ export function videoConstraints(cameraId?: string): MediaTrackConstraints {
  * Audio as the mic hears it unless "Clean up audio" is on: mono, 48 kHz
  * (browsers may still deliver stereo, so the Session file records what arrived).
  */
-export function audioConstraints(micId?: string, cleanUpAudio = false): MediaTrackConstraints {
+export function audioConstraints(micId?: string, cleanUpAudio = false, exact = false): MediaTrackConstraints {
 	return {
-		...(micId ? { deviceId: { ideal: micId } } : {}),
+		...(micId ? { deviceId: exact ? { exact: micId } : { ideal: micId } } : {}),
 		echoCancellation: cleanUpAudio,
 		noiseSuppression: cleanUpAudio,
 		autoGainControl: cleanUpAudio,

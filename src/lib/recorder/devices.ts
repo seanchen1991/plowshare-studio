@@ -7,13 +7,15 @@ export function openDevices(choice: CaptureChoice): Promise<MediaStream> {
 	return navigator.mediaDevices.getUserMedia(captureConstraints(choice));
 }
 
-export async function openCamera(cameraId?: string): Promise<MediaStreamTrack> {
-	const stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints(cameraId) });
+/** Opens exactly this camera. */
+export async function openCamera(cameraId: string): Promise<MediaStreamTrack> {
+	const stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints(cameraId, true) });
 	return stream.getVideoTracks()[0]!;
 }
 
-export async function openMic(micId?: string, cleanUpAudio = false): Promise<MediaStreamTrack> {
-	const stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints(micId, cleanUpAudio) });
+/** Opens exactly this mic. */
+export async function openMic(micId: string, cleanUpAudio = false): Promise<MediaStreamTrack> {
+	const stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints(micId, cleanUpAudio, true) });
 	return stream.getAudioTracks()[0]!;
 }
 
