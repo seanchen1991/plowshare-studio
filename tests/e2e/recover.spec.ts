@@ -1,7 +1,7 @@
 // Crash recovery: kill the browser process (not just the page) mid-take,
 // relaunch it on the same profile, and Recover. Runs in Chrome and Firefox.
 
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
 import { fixtureSpec as s } from '../fixtures/spec.ts';
 import { readOpfsJson, saveOpfsFile } from '../helpers/app.ts';
@@ -30,7 +30,15 @@ test.beforeEach(async ({ playwright, browserName }, testInfo) => {
 /** Kills the browser the way a crash would: every process using the profile, at once, with no chance to clean up. */
 async function killBrowser(context: BrowserContext) {
 	const closed = new Promise((done) => context.on('close', done));
-	execSync(`pkill -9 -f ${JSON.stringify(profile)}`);
+	// No shell: its own command line would name the profile too, and get killed with the browser.
+	const pids = execFileSync('pgrep', ['-f', profile], { encoding: 'utf8' }).trim().split('\n').map(Number);
+	for (const pid of pids) {
+		try {
+			process.kill(pid, 'SIGKILL');
+		} catch {
+			// Already gone with its parent.
+		}
+	}
 	await closed;
 }
 
