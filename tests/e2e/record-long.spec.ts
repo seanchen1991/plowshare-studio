@@ -16,7 +16,7 @@ test(`records a ${minutes}-minute take without losing frames or audio @long`, as
 	test.setTimeout((minutes + 15) * 60_000);
 	await page.goto('/');
 	await page.getByRole('button', { name: 'Record' }).click();
-	await expect(page.getByTestId('elapsed')).toBeVisible();
+	await expect(page.getByTestId('elapsed')).toBeVisible({ timeout: 10_000 });
 
 	const heapMB: number[] = [];
 	for (let minute = 0; minute < minutes; minute++) {

@@ -5,9 +5,11 @@
 	import { deviceProblem, frameRateWarning, sampleRateWarning, type DeviceProblem } from '../lib/recorder/device-checks';
 	import { findDevice, loadDevicePrefs, micKey, saveDevicePrefs } from '../lib/recorder/device-prefs';
 	import { listDevices, openCamera, openDevices, openMic, watchFrameRate, type DeviceLists } from '../lib/recorder/devices';
+	import { meterLevel, type LevelReading } from '../lib/recorder/level-meter';
 	import { startTake, type Take } from '../lib/recorder/take';
 	import type { Session } from '../lib/storage/session-file';
 	import Button from './Button.svelte';
+	import LevelMeter from './LevelMeter.svelte';
 	import PillSelect from './PillSelect.svelte';
 	import PillToggle from './PillToggle.svelte';
 	import TakeRow from './TakeRow.svelte';
@@ -35,7 +37,9 @@
 
 	const isMac = /Macintosh|Mac OS X/.test(navigator.userAgent);
 
-	let phase = $state<'idle' | 'starting' | 'capturing' | 'stopping'>('idle');
+	let phase = $state<'idle' | 'countdown' | 'starting' | 'capturing' | 'stopping'>('idle');
+	let countdown = $state(3);
+	let reading = $state<LevelReading | null>(null);
 	let devicesState = $state<'off' | 'opening' | 'on' | 'failed'>('off');
 	let problem = $state<DeviceProblem | null>(null);
 	let error = $state<string | null>(null);
@@ -55,6 +59,8 @@
 	let stream: MediaStream | null = null;
 	let ticker: ReturnType<typeof setInterval> | undefined;
 	let stopWatching = () => {};
+	let stopMetering = () => {};
+	let countdownTimer: ReturnType<typeof setInterval> | undefined;
 	// Bumped whenever the devices close, so an open still in flight knows it is stale.
 	let generation = 0;
 
@@ -80,6 +86,7 @@
 
 	onDestroy(() => {
 		clearInterval(ticker);
+		clearInterval(countdownTimer);
 		navigator.mediaDevices?.removeEventListener('devicechange', onDeviceChange);
 		closePreview();
 	});
@@ -124,6 +131,8 @@
 	function closePreview() {
 		generation++;
 		stopWatching();
+		stopMetering();
+		reading = null;
 		stream?.getTracks().forEach((track) => track.stop());
 		stream = null;
 		if (preview) preview.srcObject = null;
@@ -144,6 +153,8 @@
 		preview!.srcObject = stream;
 		await preview!.play();
 		stopWatching = watchFrameRate(preview!, (rate) => (fps = rate));
+		stopMetering();
+		stopMetering = audio ? meterLevel(audio, (r) => (reading = r)) : () => {};
 	}
 
 	async function replaceCamera(id: string) {
@@ -199,9 +210,37 @@
 		void changeDevice(() => replaceMic(id));
 	}
 
+	/** 3-2-1, so the user can check their level (automatic gain is off) before anything is recorded. */
+	function startCountdown() {
+		if (phase !== 'idle' || devicesState !== 'on') return;
+		error = null;
+		countdown = 3;
+		phase = 'countdown';
+		countdownTimer = setInterval(() => {
+			if (--countdown > 0) return;
+			clearInterval(countdownTimer);
+			void record();
+		}, 1000);
+	}
+
+	function cancelCountdown() {
+		if (phase !== 'countdown') return;
+		clearInterval(countdownTimer);
+		phase = 'idle';
+	}
+
+	function onkeydown(event: KeyboardEvent) {
+		if (!active) return;
+		if (event.key === 'Escape') return cancelCountdown();
+		// Space starts, unless it's meant for a focused control.
+		const target = event.target as HTMLElement;
+		if (event.code !== 'Space' || event.repeat || target.closest('button, input, select, textarea, [contenteditable]')) return;
+		event.preventDefault();
+		startCountdown();
+	}
+
 	async function record() {
 		if (!stream) return;
-		error = null;
 		phase = 'starting';
 		try {
 			take = await startTake({
@@ -242,6 +281,8 @@
 		devices.map((d, i) => ({ value: d.deviceId, label: d.label || `${fallback} ${i + 1}` }));
 </script>
 
+<svelte:window {onkeydown} />
+
 <div class="record">
 	<div class="stage" class:live={devicesState === 'on'}>
 		<video bind:this={preview} muted playsinline data-testid="preview"></video>
@@ -258,6 +299,11 @@
 		{/if}
 		{#if busy}
 			<span class="rec"><span class="dot"></span>REC</span>
+		{/if}
+		{#if phase === 'countdown'}
+			<div class="countdown" data-testid="countdown">
+				<span class="count">{countdown}</span>
+			</div>
 		{/if}
 		{#if warnings.length > 0 && devicesState === 'on'}
 			<div class="warnings">
@@ -293,7 +339,9 @@
 		</PillToggle>
 	</div>
 
-	<!-- The live mic waveform goes here (issue 07). -->
+	{#if devicesState === 'on'}
+		<LevelMeter {reading} warn={phase === 'countdown'} />
+	{/if}
 
 	<div class="controls">
 		{#if busy}
@@ -304,10 +352,14 @@
 				<span class="time">{formatDuration(elapsedMs * 1000)}</span>
 				<span class="saved">{(writtenBytes / 1e6).toFixed(0)} MB saved</span>
 			</p>
+		{:else if phase === 'countdown'}
+			<button class="big" onclick={cancelCountdown}>Cancel</button>
+			<p class="hint">Recording starts in {countdown}… Press Esc to cancel</p>
 		{:else}
-			<button class="big" onclick={record} disabled={phase === 'starting' || devicesState !== 'on'}>
+			<button class="big" onclick={startCountdown} disabled={phase === 'starting' || devicesState !== 'on'}>
 				<span class="dot"></span>Record
 			</button>
+			<p class="hint">Press Space to start · 3-2-1 countdown</p>
 		{/if}
 	</div>
 
@@ -426,6 +478,29 @@
 		font-size: var(--text-tiny);
 		font-weight: 600;
 		letter-spacing: 0.04em;
+	}
+	.countdown {
+		position: absolute;
+		inset: 0;
+		display: grid;
+		place-items: center;
+		background: rgb(0 0 0 / 0.25);
+	}
+	.count {
+		display: grid;
+		place-items: center;
+		width: 120px;
+		height: 120px;
+		border-radius: 50%;
+		background: rgb(0 0 0 / 0.55);
+		color: #fff;
+		font-size: 64px;
+		font-weight: 600;
+		font-variant-numeric: tabular-nums;
+	}
+	.hint {
+		color: var(--muted);
+		font-size: var(--text-small);
 	}
 	.controls {
 		display: grid;

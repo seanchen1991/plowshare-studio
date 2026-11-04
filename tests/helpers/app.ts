@@ -3,11 +3,19 @@
 import { expect, type Page } from '@playwright/test';
 import type { Session } from '../../src/lib/storage/session-file.ts';
 
-/** Records a take of about `seconds` and waits until it is Ready. Returns its Session file. */
-export async function recordTake(page: Page, seconds: number, { finalizeTimeoutMs = 60_000 } = {}): Promise<Session> {
+/**
+ * Records a take of about `seconds` (after the 3-2-1 countdown) and waits until
+ * it is Ready. Returns its Session file. `beforeStop` runs just before Stop.
+ */
+export async function recordTake(
+	page: Page,
+	seconds: number,
+	{ finalizeTimeoutMs = 60_000, beforeStop }: { finalizeTimeoutMs?: number; beforeStop?: () => Promise<void> } = {}
+): Promise<Session> {
 	await page.getByRole('button', { name: 'Record' }).click();
-	await expect(page.getByTestId('elapsed')).toBeVisible();
+	await expect(page.getByTestId('elapsed')).toBeVisible({ timeout: 10_000 });
 	await page.waitForTimeout(seconds * 1000);
+	await beforeStop?.();
 	await page.getByRole('button', { name: 'Stop' }).click();
 
 	const take = page.getByTestId('session').first();

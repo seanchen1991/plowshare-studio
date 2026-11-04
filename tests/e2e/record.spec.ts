@@ -10,7 +10,13 @@ const seconds = 30;
 test('records a take, finalizes it and plays it back with seeking', async ({ page }, testInfo) => {
 	test.setTimeout(150_000);
 	await page.goto('/');
-	const session = await recordTake(page, seconds);
+	let elapsedSeconds = 0;
+	const session = await recordTake(page, seconds, {
+		beforeStop: async () => {
+			const [m, s] = (await page.getByTestId('elapsed').locator('.time').innerText()).split(':').map(Number);
+			elapsedSeconds = m! * 60 + s!;
+		}
+	});
 
 	// The Session file follows the brief's shape.
 	expect(session.version).toBe(1);
@@ -23,6 +29,8 @@ test('records a take, finalizes it and plays it back with seeking', async ({ pag
 	const segment = recording.segments[0]!;
 	expect(segment.startUs).toBe(0);
 	expect(Math.abs(segment.durationUs! / 1e6 - seconds)).toBeLessThan(2);
+	// The elapsed time shown (whole seconds) matches the finished Recording.
+	expect(Math.abs(segment.durationUs! / 1e6 - elapsedSeconds)).toBeLessThan(1.5);
 
 	// Finished as MP4 for H.264, WebM otherwise (ADR 0003); the raw file and manifest are gone.
 	expect(segment.path).toMatch(recording.video!.codec === 'avc' ? /seg-01\.mp4$/ : /seg-01\.webm$/);
@@ -89,7 +97,8 @@ test('tells the user when the camera only provides 720p', async ({ page }) => {
 	await page.goto('/');
 	await page.getByRole('button', { name: 'Record' }).click();
 	await expect(page.getByTestId('resolution-notice')).toHaveText(
-		`Your camera only provides ${s.height}p, so this take records at ${s.height}p.`
+		`Your camera only provides ${s.height}p, so this take records at ${s.height}p.`,
+		{ timeout: 10_000 }
 	);
 	await page.getByRole('button', { name: 'Stop' }).click();
 	await expect(page.getByTestId('resolution-notice')).toBeHidden();
