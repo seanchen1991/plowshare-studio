@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import { fixtureSpec as s } from '../fixtures/spec.ts';
 import { opfsFileExists, recordTake, saveOpfsFile } from '../helpers/app.ts';
 import { detectBeeps } from '../helpers/beeps.ts';
+import { greyFrame, readFrameCode } from '../helpers/frame-code.ts';
 import { decodeAudio, probeDurationSeconds, probeStreams, streamCodecs } from '../helpers/media-file.ts';
 
 const seconds = 30;
@@ -51,6 +52,11 @@ test('records a take, finalizes it and plays it back with seeking', async ({ pag
 	expect(Number(audio.sample_rate)).toBe(recording.audio.sampleRate);
 	expect(recording.audio).toMatchObject({ codec: 'opus', sampleRate: 48000, bitrate: 160_000, processing: false });
 	expect(Math.abs(probeDurationSeconds(file) - segment.durationUs! / 1e6)).toBeLessThan(0.5);
+	// Not mirrored: the fixture's frame counter reads correctly, 10 s apart.
+	const loopFrames = s.loopSeconds * s.fps;
+	const counted = (readFrameCode(greyFrame(file, 15)) - readFrameCode(greyFrame(file, 5)) + loopFrames) % loopFrames;
+	expect(Math.abs(counted - 10 * s.fps)).toBeLessThan(15);
+
 	const sampleRate = 8000;
 	const beeps = detectBeeps(decodeAudio(file, sampleRate), sampleRate);
 	const duration = probeDurationSeconds(file);

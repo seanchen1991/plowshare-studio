@@ -1,18 +1,30 @@
 <script lang="ts">
-	import { onDestroy } from 'svelte';
-	import { captureConstraints, resolutionNotice } from '../lib/media/capture';
+	import { onDestroy, untrack } from 'svelte';
+	import type { SupportedBrowser } from '../lib/browser/support';
+	import { resolutionNotice } from '../lib/media/capture';
+	import { deviceProblem, frameRateWarning, sampleRateWarning, type DeviceProblem } from '../lib/recorder/device-checks';
+	import { loadDevicePrefs, saveDevicePrefs } from '../lib/recorder/device-prefs';
+	import { listDevices, openCamera, openDevices, openMic, watchFrameRate, type DeviceLists } from '../lib/recorder/devices';
 	import { startTake, type Take } from '../lib/recorder/take';
 	import type { Session } from '../lib/storage/session-file';
+	import Button from './Button.svelte';
+	import PillSelect from './PillSelect.svelte';
+	import PillToggle from './PillToggle.svelte';
 	import TakeRow from './TakeRow.svelte';
 	import { formatDuration } from './format';
 
 	let {
+		active,
+		browser,
 		lastTake,
 		progress,
 		onStarted,
 		onStopped,
 		onShowTakes
 	}: {
+		/** Whether the Record screen is showing; the camera is only on while it is (or while capturing). */
+		active: boolean;
+		browser: SupportedBrowser;
 		/** The take recorded most recently in this visit, shown under the Record button. */
 		lastTake: Session | null;
 		progress?: number;
@@ -21,26 +33,154 @@
 		onShowTakes: () => void;
 	} = $props();
 
+	const isMac = /Macintosh|Mac OS X/.test(navigator.userAgent);
+
 	let phase = $state<'idle' | 'starting' | 'capturing' | 'stopping'>('idle');
+	let devicesState = $state<'off' | 'opening' | 'on' | 'failed'>('off');
+	let problem = $state<DeviceProblem | null>(null);
 	let error = $state<string | null>(null);
 	let elapsedMs = $state(0);
 	let writtenBytes = $state(0);
 	let notice = $state<string | null>(null);
 	let preview = $state<HTMLVideoElement>();
 
+	let prefs = $state(loadDevicePrefs());
+	let lists = $state<DeviceLists>({ cameras: [], mics: [] });
+	let cameraId = $state<string>();
+	let micId = $state<string>();
+	let fps = $state<number | null>(null);
+	let micSampleRate = $state<number>();
+
 	let take: Take | null = null;
 	let stream: MediaStream | null = null;
 	let ticker: ReturnType<typeof setInterval> | undefined;
+	let stopWatching = () => {};
+	// Bumped whenever the devices close, so an open still in flight knows it is stale.
+	let generation = 0;
 
-	onDestroy(() => clearInterval(ticker));
+	const cleanUpAudio = $derived(micId ? (prefs.cleanUpAudio[micId] ?? false) : false);
+	const busy = $derived(phase === 'capturing' || phase === 'stopping');
+	const warnings = $derived(
+		[fps === null ? null : frameRateWarning(fps), sampleRateWarning(micSampleRate)].filter((w) => w !== null)
+	);
+
+	// The camera and mic stay on while the Record screen shows, and through a take.
+	$effect(() => {
+		const wanted = active || phase !== 'idle';
+		untrack(() => {
+			if (wanted && devicesState === 'off') void openPreview();
+			else if (!wanted && devicesState !== 'off') closePreview();
+		});
+	});
+
+	function onDeviceChange() {
+		if (devicesState === 'on') void listDevices().then((l) => (lists = l));
+	}
+	navigator.mediaDevices?.addEventListener('devicechange', onDeviceChange);
+
+	onDestroy(() => {
+		clearInterval(ticker);
+		navigator.mediaDevices?.removeEventListener('devicechange', onDeviceChange);
+		closePreview();
+	});
+
+	async function openPreview() {
+		const mine = ++generation;
+		devicesState = 'opening';
+		problem = null;
+		try {
+			const opened = await openDevices({
+				cameraId: prefs.cameraId,
+				micId: prefs.micId,
+				cleanUpAudio: prefs.micId ? prefs.cleanUpAudio[prefs.micId] : false
+			});
+			if (mine !== generation) return opened.getTracks().forEach((t) => t.stop());
+			stream = opened;
+			// Without a saved mic, the one the browser picked may have "Clean up audio" on from before.
+			const actualMic = stream.getAudioTracks()[0]?.getSettings().deviceId;
+			if (actualMic && actualMic !== prefs.micId && prefs.cleanUpAudio[actualMic]) await replaceMic(actualMic);
+			await attach();
+			lists = await listDevices();
+			if (mine !== generation) return;
+			devicesState = 'on';
+		} catch (e) {
+			if (mine !== generation) return;
+			closePreview();
+			problem = deviceProblem(e, browser, isMac);
+			devicesState = 'failed';
+		}
+	}
+
+	function closePreview() {
+		generation++;
+		stopWatching();
+		stream?.getTracks().forEach((track) => track.stop());
+		stream = null;
+		if (preview) preview.srcObject = null;
+		fps = null;
+		micSampleRate = undefined;
+		devicesState = 'off';
+	}
+
+	/** Shows the current stream in the preview and starts the checks on it. */
+	async function attach() {
+		const video = stream!.getVideoTracks()[0];
+		const audio = stream!.getAudioTracks()[0];
+		cameraId = video?.getSettings().deviceId;
+		micId = audio?.getSettings().deviceId;
+		micSampleRate = audio?.getSettings().sampleRate;
+		stopWatching();
+		fps = null;
+		preview!.srcObject = stream;
+		await preview!.play();
+		stopWatching = watchFrameRate(preview!, (rate) => (fps = rate));
+	}
+
+	async function replaceMic(id: string) {
+		stream!.getAudioTracks().forEach((t) => t.stop());
+		const track = await openMic(id, prefs.cleanUpAudio[id] ?? false);
+		stream = new MediaStream([...stream!.getVideoTracks(), track]);
+	}
+
+	async function changeDevice(change: () => Promise<void>) {
+		error = null;
+		try {
+			await change();
+			await attach();
+		} catch (e) {
+			error = `${deviceProblem(e, browser, isMac).title}`;
+		}
+	}
+
+	function chooseCamera(id: string) {
+		prefs.cameraId = id;
+		saveDevicePrefs(prefs);
+		void changeDevice(async () => {
+			stream!.getVideoTracks().forEach((t) => t.stop());
+			const track = await openCamera(id);
+			stream = new MediaStream([track, ...stream!.getAudioTracks()]);
+		});
+	}
+
+	function chooseMic(id: string) {
+		prefs.micId = id;
+		saveDevicePrefs(prefs);
+		void changeDevice(() => replaceMic(id));
+	}
+
+	function setCleanUpAudio(on: boolean) {
+		if (!micId) return;
+		prefs.cleanUpAudio[micId] = on;
+		saveDevicePrefs(prefs);
+		const id = micId;
+		void changeDevice(() => replaceMic(id));
+	}
 
 	async function record() {
+		if (!stream) return;
 		error = null;
 		phase = 'starting';
 		try {
-			stream = await navigator.mediaDevices.getUserMedia(captureConstraints());
-			preview!.srcObject = stream;
-			await preview!.play();
 			take = await startTake({
 				stream,
 				preview,
@@ -52,7 +192,6 @@
 			});
 		} catch (e) {
 			error = `Couldn't start recording: ${e instanceof Error ? e.message : String(e)}`;
-			releaseDevices();
 			phase = 'idle';
 			return;
 		}
@@ -71,33 +210,67 @@
 		clearInterval(ticker);
 		const session = await take.stop();
 		take = null;
-		releaseDevices();
 		notice = null;
 		phase = 'idle';
 		onStopped(session);
 	}
 
-	function releaseDevices() {
-		stream?.getTracks().forEach((track) => track.stop());
-		stream = null;
-		if (preview) preview.srcObject = null;
-	}
-
-	const busy = $derived(phase === 'capturing' || phase === 'stopping');
+	const deviceOptions = (devices: MediaDeviceInfo[], fallback: string) =>
+		devices.map((d, i) => ({ value: d.deviceId, label: d.label || `${fallback} ${i + 1}` }));
 </script>
 
 <div class="record">
-	<div class="stage" class:live={busy}>
-		<video bind:this={preview} muted playsinline></video>
-		{#if !busy}
-			<p class="placeholder">{phase === 'starting' ? 'Starting camera…' : 'Your camera turns on when you record.'}</p>
+	<div class="stage" class:live={devicesState === 'on'}>
+		<video bind:this={preview} muted playsinline data-testid="preview"></video>
+		{#if devicesState === 'opening' || devicesState === 'off'}
+			<p class="placeholder">Starting camera…</p>
+		{:else if devicesState === 'failed' && problem}
+			<div class="problem" role="alert" data-testid="device-problem">
+				<p class="problem-title">{problem.title}</p>
+				<ol>
+					{#each problem.steps as step (step)}<li>{step}</li>{/each}
+				</ol>
+				<Button onclick={openPreview}>Try again</Button>
+			</div>
 		{/if}
 		{#if busy}
 			<span class="rec"><span class="dot"></span>REC</span>
 		{/if}
+		{#if warnings.length > 0 && devicesState === 'on'}
+			<div class="warnings">
+				{#each warnings as warning (warning)}<p data-testid="device-warning">{warning}</p>{/each}
+			</div>
+		{/if}
 	</div>
 
-	<!-- Device pills and the live mic waveform go here (issues 06 and 07). -->
+	<div class="devices">
+		<PillSelect
+			label="Camera"
+			icon="camera"
+			options={deviceOptions(lists.cameras, 'Camera')}
+			value={cameraId}
+			disabled={devicesState !== 'on' || phase !== 'idle'}
+			onchange={chooseCamera}
+		/>
+		<PillSelect
+			label="Microphone"
+			icon="mic"
+			options={deviceOptions(lists.mics, 'Microphone')}
+			value={micId}
+			disabled={devicesState !== 'on' || phase !== 'idle'}
+			onchange={chooseMic}
+		/>
+		<PillToggle
+			pressed={cleanUpAudio}
+			disabled={devicesState !== 'on' || phase !== 'idle'}
+			title="Echo cancellation, noise suppression and automatic gain, as in video calls. Best left off with a good mic in a quiet room."
+			onchange={setCleanUpAudio}
+		>
+			Clean up audio
+		</PillToggle>
+	</div>
+
+	<!-- The live mic waveform goes here (issue 07). -->
 
 	<div class="controls">
 		{#if busy}
@@ -109,7 +282,7 @@
 				<span class="saved">{(writtenBytes / 1e6).toFixed(0)} MB saved</span>
 			</p>
 		{:else}
-			<button class="big" onclick={record} disabled={phase === 'starting'}>
+			<button class="big" onclick={record} disabled={phase === 'starting' || devicesState !== 'on'}>
 				<span class="dot"></span>Record
 			</button>
 		{/if}
@@ -165,6 +338,8 @@
 	}
 	.live video {
 		visibility: visible;
+		/* Mirrored like a selfie camera; the recording is not. */
+		transform: scaleX(-1);
 	}
 	.placeholder {
 		position: absolute;
@@ -172,6 +347,47 @@
 		display: grid;
 		place-items: center;
 		color: var(--muted);
+	}
+	.problem {
+		position: absolute;
+		inset: 0;
+		display: grid;
+		align-content: center;
+		justify-items: start;
+		gap: 10px;
+		padding: 24px 15%;
+	}
+	.problem-title {
+		font-weight: 600;
+	}
+	.problem ol {
+		margin: 0;
+		padding-left: 20px;
+		color: var(--muted);
+	}
+	.warnings {
+		position: absolute;
+		left: 12px;
+		right: 12px;
+		bottom: 12px;
+		display: grid;
+		justify-items: start;
+		gap: 6px;
+	}
+	.warnings p {
+		max-width: 100%;
+		padding: 6px 10px;
+		border: 1px solid var(--working-edge);
+		border-radius: var(--radius-panel);
+		background: var(--working-bg);
+		color: var(--working-fg);
+		font-size: var(--text-small);
+	}
+	.devices {
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: center;
+		gap: 8px;
 	}
 	.rec {
 		position: absolute;

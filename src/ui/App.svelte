@@ -59,6 +59,8 @@
 	<main data-testid="home">
 		<section aria-label="Record" hidden={screen !== 'record'}>
 			<RecordScreen
+				active={screen === 'record'}
+				browser={support.browser}
 				{lastTake}
 				progress={lastTakeId ? progress[lastTakeId] : undefined}
 				onStarted={(session) => {

@@ -3,27 +3,43 @@
 
 import type { VideoSettings } from '../storage/session-file.ts';
 
+export interface CaptureChoice {
+	cameraId?: string;
+	micId?: string;
+	/** The browser's echo cancellation, noise suppression and automatic gain; off unless chosen. */
+	cleanUpAudio?: boolean;
+}
+
 /**
  * 1080p at 30 fps if the camera has it; `ideal` means the browser falls back to
  * the closest the camera offers instead of failing, and it never upscales.
- * Audio as the mic hears it: no call-style processing, mono, 48 kHz (browsers
- * may still deliver stereo, so the Session file records what arrived).
  */
-export function captureConstraints(): MediaStreamConstraints {
+export function videoConstraints(cameraId?: string): MediaTrackConstraints {
 	return {
-		video: {
-			width: { ideal: 1920 },
-			height: { ideal: 1080 },
-			frameRate: { ideal: 30 }
-		},
-		audio: {
-			echoCancellation: false,
-			noiseSuppression: false,
-			autoGainControl: false,
-			channelCount: { ideal: 1 },
-			sampleRate: { ideal: 48000 }
-		}
+		...(cameraId ? { deviceId: { ideal: cameraId } } : {}),
+		width: { ideal: 1920 },
+		height: { ideal: 1080 },
+		frameRate: { ideal: 30 }
 	};
+}
+
+/**
+ * Audio as the mic hears it unless "Clean up audio" is on: mono, 48 kHz
+ * (browsers may still deliver stereo, so the Session file records what arrived).
+ */
+export function audioConstraints(micId?: string, cleanUpAudio = false): MediaTrackConstraints {
+	return {
+		...(micId ? { deviceId: { ideal: micId } } : {}),
+		echoCancellation: cleanUpAudio,
+		noiseSuppression: cleanUpAudio,
+		autoGainControl: cleanUpAudio,
+		channelCount: { ideal: 1 },
+		sampleRate: { ideal: 48000 }
+	};
+}
+
+export function captureConstraints({ cameraId, micId, cleanUpAudio }: CaptureChoice = {}): MediaStreamConstraints {
+	return { video: videoConstraints(cameraId), audio: audioConstraints(micId, cleanUpAudio) };
 }
 
 export const audioBitsPerSecond = 160_000;

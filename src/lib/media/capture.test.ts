@@ -13,6 +13,20 @@ describe('captureConstraints', () => {
 		});
 	});
 
+	it('asks for the chosen devices, falling back if they are gone', () => {
+		const constraints = captureConstraints({ cameraId: 'cam', micId: 'mic' });
+		expect(constraints.video).toMatchObject({ deviceId: { ideal: 'cam' } });
+		expect(constraints.audio).toMatchObject({ deviceId: { ideal: 'mic' } });
+	});
+
+	it('turns call-style processing on only when asked to clean up audio', () => {
+		expect(captureConstraints({ cleanUpAudio: true }).audio).toMatchObject({
+			echoCancellation: true,
+			noiseSuppression: true,
+			autoGainControl: true
+		});
+	});
+
 	it('turns call-style audio processing off and asks for mono at 48 kHz', () => {
 		expect(captureConstraints().audio).toMatchObject({
 			echoCancellation: false,
