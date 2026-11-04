@@ -3,7 +3,7 @@
 	import type { SupportedBrowser } from '../lib/browser/support';
 	import { resolutionNotice } from '../lib/media/capture';
 	import { deviceProblem, frameRateWarning, sampleRateWarning, type DeviceProblem } from '../lib/recorder/device-checks';
-	import { loadDevicePrefs, saveDevicePrefs } from '../lib/recorder/device-prefs';
+	import { findDevice, loadDevicePrefs, micKey, saveDevicePrefs } from '../lib/recorder/device-prefs';
 	import { listDevices, openCamera, openDevices, openMic, watchFrameRate, type DeviceLists } from '../lib/recorder/devices';
 	import { startTake, type Take } from '../lib/recorder/take';
 	import type { Session } from '../lib/storage/session-file';
@@ -58,7 +58,7 @@
 	// Bumped whenever the devices close, so an open still in flight knows it is stale.
 	let generation = 0;
 
-	const cleanUpAudio = $derived(micId ? (prefs.cleanUpAudio[micId] ?? false) : false);
+	const cleanUpAudio = $derived(cleanUpFor(micId));
 	const busy = $derived(phase === 'capturing' || phase === 'stopping');
 	const warnings = $derived(
 		[fps === null ? null : frameRateWarning(fps), sampleRateWarning(micSampleRate)].filter((w) => w !== null)
@@ -90,22 +90,26 @@
 		problem = null;
 		try {
 			const opened = await openDevices({
-				cameraId: prefs.cameraId,
-				micId: prefs.micId,
-				cleanUpAudio: prefs.micId ? prefs.cleanUpAudio[prefs.micId] : false
+				cameraId: prefs.camera?.id,
+				micId: prefs.mic?.id,
+				cleanUpAudio: prefs.mic ? (prefs.cleanUpAudio[micKey({ deviceId: prefs.mic.id, label: prefs.mic.label })] ?? false) : false
 			});
 			if (mine !== generation) return opened.getTracks().forEach((t) => t.stop());
 			stream = opened;
 			// Browsers treat a preferred device as a hint, and before access is allowed they
 			// can't match it at all. Now that the devices are listed, insist on the saved ones.
 			lists = await listDevices();
-			const has = (devices: MediaDeviceInfo[], id?: string) => !!id && devices.some((d) => d.deviceId === id);
+			const savedCamera = findDevice(lists.cameras, prefs.camera);
+			const savedMic = findDevice(lists.mics, prefs.mic);
 			const actualCamera = stream.getVideoTracks()[0]?.getSettings().deviceId;
 			const actualMic = stream.getAudioTracks()[0]?.getSettings().deviceId;
-			if (has(lists.cameras, prefs.cameraId) && actualCamera !== prefs.cameraId) await replaceCamera(prefs.cameraId!);
-			if (has(lists.mics, prefs.micId) && actualMic !== prefs.micId) await replaceMic(prefs.micId!);
-			// Without a saved mic, the one the browser picked may have "Clean up audio" on from before.
-			else if (actualMic && !prefs.micId && prefs.cleanUpAudio[actualMic]) await replaceMic(actualMic);
+			if (savedCamera && savedCamera.deviceId !== actualCamera) await replaceCamera(savedCamera.deviceId);
+			if (savedMic && (savedMic.deviceId !== actualMic || cleanUpFor(actualMic) !== cleanUpFor(savedMic.deviceId))) {
+				await replaceMic(savedMic.deviceId);
+			} else if (!savedMic && actualMic && cleanUpFor(actualMic)) {
+				// The mic the browser picked may have "Clean up audio" on from before.
+				await replaceMic(actualMic);
+			}
 			if (mine !== generation) return;
 			await attach();
 			devicesState = 'on';
@@ -148,9 +152,19 @@
 		stream = new MediaStream([track, ...stream!.getAudioTracks()]);
 	}
 
+	/** "Clean up audio" for a mic, remembered by its name. */
+	function cleanUpFor(id: string | undefined): boolean {
+		const mic = lists.mics.find((d) => d.deviceId === id);
+		return mic ? (prefs.cleanUpAudio[micKey(mic)] ?? false) : false;
+	}
+
+	function saved(devices: MediaDeviceInfo[], id: string) {
+		return { id, label: devices.find((d) => d.deviceId === id)?.label ?? '' };
+	}
+
 	async function replaceMic(id: string) {
 		stream!.getAudioTracks().forEach((t) => t.stop());
-		const track = await openMic(id, prefs.cleanUpAudio[id] ?? false);
+		const track = await openMic(id, cleanUpFor(id));
 		stream = new MediaStream([...stream!.getVideoTracks(), track]);
 	}
 
@@ -165,22 +179,23 @@
 	}
 
 	function chooseCamera(id: string) {
-		prefs.cameraId = id;
+		prefs.camera = saved(lists.cameras, id);
 		saveDevicePrefs(prefs);
 		void changeDevice(() => replaceCamera(id));
 	}
 
 	function chooseMic(id: string) {
-		prefs.micId = id;
+		prefs.mic = saved(lists.mics, id);
 		saveDevicePrefs(prefs);
 		void changeDevice(() => replaceMic(id));
 	}
 
 	function setCleanUpAudio(on: boolean) {
-		if (!micId) return;
-		prefs.cleanUpAudio[micId] = on;
+		const mic = lists.mics.find((d) => d.deviceId === micId);
+		if (!mic) return;
+		prefs.cleanUpAudio[micKey(mic)] = on;
 		saveDevicePrefs(prefs);
-		const id = micId;
+		const id = mic.deviceId;
 		void changeDevice(() => replaceMic(id));
 	}
 

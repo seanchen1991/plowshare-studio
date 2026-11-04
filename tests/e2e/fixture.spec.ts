@@ -13,6 +13,20 @@ test('the fake camera and mic play the fixture', async ({ page }) => {
 			});
 			const video = stream.getVideoTracks()[0]!.getSettings();
 
+			// Grab a frame: the black frame-code strip at the bottom left, the test pattern above it.
+			const player = document.createElement('video');
+			player.muted = true;
+			player.srcObject = stream;
+			await player.play();
+			await new Promise((done) => setTimeout(done, 500));
+			const canvas = document.createElement('canvas');
+			canvas.width = player.videoWidth;
+			canvas.height = player.videoHeight;
+			const context2d = canvas.getContext('2d')!;
+			context2d.drawImage(player, 0, 0);
+			const pixel = (x: number, y: number) => Array.from(context2d.getImageData(x, y, 1, 1).data.slice(0, 3));
+			const pixels = { strip: pixel(10, video.height! - 40), pattern: pixel(video.width! / 2, video.height! / 2) };
+
 			// Collect raw mic samples for a few seconds.
 			const context = new AudioContext({ sampleRate });
 			const source = context.createMediaStreamSource(stream);
@@ -26,13 +40,16 @@ test('the fake camera and mic play the fixture', async ({ page }) => {
 			await context.close();
 			stream.getTracks().forEach((track) => track.stop());
 
-			return { width: video.width, height: video.height, samples: chunks.flat() };
+			return { width: video.width, height: video.height, pixels, samples: chunks.flat() };
 		},
 		{ seconds: 4, sampleRate: s.sampleRate }
 	);
 
 	expect(captured.width).toBe(s.width);
 	expect(captured.height).toBe(s.height);
+	// The picture itself, not a blank frame (Chrome shows plain green for MJPEG it can't read).
+	expect(Math.max(...captured.pixels.strip)).toBeLessThan(40);
+	expect(Math.max(...captured.pixels.pattern)).toBeGreaterThan(200);
 
 	const beeps = detectBeeps(Float32Array.from(captured.samples), s.sampleRate);
 	expect(beeps.length).toBeGreaterThanOrEqual(3);

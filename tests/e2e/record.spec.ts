@@ -52,11 +52,14 @@ test('records a take, finalizes it and plays it back with seeking', async ({ pag
 	expect(Number(audio.sample_rate)).toBe(recording.audio.sampleRate);
 	expect(recording.audio).toMatchObject({ codec: 'opus', sampleRate: 48000, bitrate: 160_000, processing: false });
 	expect(Math.abs(probeDurationSeconds(file) - segment.durationUs! / 1e6)).toBeLessThan(0.5);
-	// Not mirrored: the fixture's frame counter reads correctly, 10 s apart.
+	// Not mirrored: the fixture's frame counter reads correctly, about 300 frames over 10 s
+	// (a busy machine's fake camera skips some). Read mirrored, the boxes give nonsense.
 	const loopFrames = s.loopSeconds * s.fps;
 	const codes = [readFrameCode(greyFrame(file, 5)), readFrameCode(greyFrame(file, 15))];
 	const counted = (codes[1]! - codes[0]! + loopFrames) % loopFrames;
-	expect(Math.abs(counted - 10 * s.fps), `frame codes ${codes.join(', ')}`).toBeLessThan(15);
+	expect(codes.every((code) => code < loopFrames), `frame codes ${codes.join(', ')}`).toBe(true);
+	expect(counted, `frame codes ${codes.join(', ')}`).toBeGreaterThan(10 * s.fps * 0.7);
+	expect(counted, `frame codes ${codes.join(', ')}`).toBeLessThan(10 * s.fps + 15);
 
 	const sampleRate = 8000;
 	const beeps = detectBeeps(decodeAudio(file, sampleRate), sampleRate);

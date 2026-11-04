@@ -30,7 +30,8 @@ export function makeFixture({ force = false } = {}): void {
 	execFileSync('ffmpeg', [
 		'-hide_banner', '-loglevel', 'error', '-y',
 		'-f', 'lavfi', '-i', video,
-		'-c:v', 'mjpeg', '-q:v', '4', '-f', 'mjpeg', fixtureFiles.video
+		// 4:2:0: Chrome's fake camera shows plain green for ffmpeg's default 4:4:4 MJPEG.
+		'-c:v', 'mjpeg', '-pix_fmt', 'yuvj420p', '-q:v', '4', '-f', 'mjpeg', fixtureFiles.video
 	], { stdio: 'inherit' });
 
 	const beepSeconds = s.beepDurationMs / 1000;

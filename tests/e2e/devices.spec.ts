@@ -13,15 +13,21 @@ test('remembers the chosen microphone between visits', async ({ page }) => {
 	await page.goto('/');
 	const mic = page.getByRole('combobox', { name: 'Microphone' });
 	await expect(page.getByRole('button', { name: 'Record' })).toBeEnabled();
-	const options = await mic.locator('option').evaluateAll((els) => els.map((el) => (el as HTMLOptionElement).value));
-	expect(options.length).toBeGreaterThan(1);
-	const chosen = options.find((value) => value !== 'default') ?? options.at(-1)!;
-	await mic.selectOption(chosen);
-	await expect(mic).toHaveValue(chosen);
+	const labels = await mic.locator('option').allTextContents();
+	expect(labels.length).toBeGreaterThan(1);
+	// Not the one the browser opens by default.
+	const chosen = labels.at(-1)!;
+	await mic.selectOption({ label: chosen });
+	await expect(mic.locator('option:checked')).toHaveText(chosen);
 
+	// Chrome hands out new device ids here on every visit, so the mic is found again by name.
 	await page.reload();
 	await expect(page.getByRole('button', { name: 'Record' })).toBeEnabled();
-	await expect(page.getByRole('combobox', { name: 'Microphone' })).toHaveValue(chosen);
+	await expect(page.getByRole('combobox', { name: 'Microphone' }).locator('option:checked')).toHaveText(chosen);
+	const inUse = await page.getByTestId('preview').evaluate((video) =>
+		((video as HTMLVideoElement).srcObject as MediaStream).getAudioTracks()[0]!.label
+	);
+	expect(inUse).toBe(chosen);
 });
 
 test('"Clean up audio" starts off, is remembered and is stored with the take', async ({ page }) => {

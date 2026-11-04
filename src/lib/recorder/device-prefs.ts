@@ -1,21 +1,47 @@
 // The camera and mic the user chose, and "Clean up audio" per mic, remembered
 // between visits in localStorage. Losing them only means choosing again.
+//
+// Device ids alone aren't enough: browsers hand out new ids each visit unless
+// camera access is remembered for the site (Firefox without "Remember", and
+// Chrome in tests). So each device is found by id, then by name.
+
+export interface SavedDevice {
+	id: string;
+	label: string;
+}
 
 export interface DevicePrefs {
-	cameraId?: string;
-	micId?: string;
-	/** "Clean up audio" by mic id; missing means off. */
+	camera?: SavedDevice;
+	mic?: SavedDevice;
+	/** "Clean up audio" by mic (see `micKey`); missing means off. */
 	cleanUpAudio: Record<string, boolean>;
 }
 
 const key = 'plowshare.devices.v1';
 
+/** What "Clean up audio" is remembered under: the mic's name, which outlives its id. */
+export function micKey(mic: { deviceId: string; label: string }): string {
+	return mic.label || mic.deviceId;
+}
+
+/** The saved device among those present: the same id, or failing that the same name. */
+export function findDevice<T extends { deviceId: string; label: string }>(devices: T[], saved?: SavedDevice): T | undefined {
+	if (!saved) return undefined;
+	return devices.find((d) => d.deviceId === saved.id) ?? (saved.label ? devices.find((d) => d.label === saved.label) : undefined);
+}
+
+function parseDevice(value: unknown): SavedDevice | undefined {
+	if (!value || typeof value !== 'object') return undefined;
+	const { id, label } = value as Record<string, unknown>;
+	return typeof id === 'string' && typeof label === 'string' ? { id, label } : undefined;
+}
+
 export function parseDevicePrefs(text: string | null): DevicePrefs {
 	try {
 		const value = JSON.parse(text ?? '{}');
 		return {
-			cameraId: typeof value.cameraId === 'string' ? value.cameraId : undefined,
-			micId: typeof value.micId === 'string' ? value.micId : undefined,
+			camera: parseDevice(value.camera),
+			mic: parseDevice(value.mic),
 			cleanUpAudio: value.cleanUpAudio && typeof value.cleanUpAudio === 'object' ? value.cleanUpAudio : {}
 		};
 	} catch {
