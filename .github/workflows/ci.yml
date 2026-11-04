@@ -19,6 +19,8 @@ jobs:
       - run: pnpm check
       - run: pnpm test
       - run: pnpm exec playwright install --with-deps chromium firefox
+      # Firefox's stand-in mic is Web Audio, which is silent on Linux without a sound server.
+      - run: sudo apt-get install -y pulseaudio && pulseaudio --start --exit-idle-time=-1
       - run: pnpm test:e2e
       - uses: actions/upload-artifact@v7
         if: failure()
