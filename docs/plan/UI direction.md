@@ -15,7 +15,7 @@ A top bar holds the name on the left, **Record · Takes · Edit** tabs (a segmen
 
 ### Record
 
-Centered column: a large 16:9 camera preview; the camera and mic as pill-shaped pickers below it, with a "Clean up audio" pill; a live waveform of the mic with its level status ("Level good"); one round **Record** button (red dot), with "Press Space to start · 3-2-1 countdown" under it. While capturing: elapsed time and how much is saved. After stop, the user stays here (the take finalizes in the background, shown in Takes).
+Centered column: a large 16:9 camera preview; the camera and mic as pill-shaped pickers below it, with a "Clean up audio" pill; a live waveform of the mic with its level status ("Level good"); one round **Record** button (red dot), with "Press Space to start · 3-2-1 countdown" under it. While capturing: elapsed time and how much is saved. After stop, the user stays here: the take finalizes in the background and appears as a **Last take** row under the Record button (the same row as in Takes, with a link to all takes). Before the camera is on, the preview is a soft grey 16:9 panel.
 
 ### Takes
 
