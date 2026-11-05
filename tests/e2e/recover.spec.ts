@@ -161,6 +161,11 @@ test('asks before trying again when the browser died during automatic recovery',
 	const again = second.pages()[0] ?? (await second.newPage());
 	await again.goto('/');
 	await expect(again.getByTestId('recovery-notice')).toHaveText(/^Recovering a take cut off when the browser closed/);
+	// Wait until the try is on disk; it is written before the remux that could crash the browser.
+	const sessionId = await again.getByTestId('session').first().getAttribute('data-session-id');
+	await expect
+		.poll(async () => (await readOpfsJson<Session>(again, `sessions/${sessionId}/session.json`)).recordings[0]!.recovery)
+		.toBeDefined();
 	await killBrowser(second);
 
 	const third = await launch();
