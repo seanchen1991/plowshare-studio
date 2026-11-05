@@ -67,3 +67,13 @@ export async function fileExists(path: string): Promise<boolean> {
 		throw error;
 	}
 }
+
+/** Deletes a directory and everything in it. */
+export async function removeDirectory(path: string): Promise<void> {
+	const { dirs, name } = split(path);
+	try {
+		await (await directory(dirs, false)).removeEntry(name, { recursive: true });
+	} catch (error) {
+		if ((error as DOMException).name !== 'NotFoundError') throw error;
+	}
+}

@@ -10,6 +10,9 @@ import {
 	updateSegment,
 	markInterrupted,
 	shouldRecoverAutomatically,
+	nextTakeTitle,
+	sessionBackedUp,
+	canDelete,
 	type AudioSettings,
 	type Session
 } from './session-file.ts';
@@ -128,6 +131,38 @@ describe('shouldRecoverAutomatically', () => {
 	it('leaves it to the user after a failed try, or one the browser died during', () => {
 		expect(shouldRecoverAutomatically({ ...interrupted, finalizeError: 'bad file' })).toBe(false);
 		expect(shouldRecoverAutomatically({ ...interrupted, recovery: { expectedUs: 1 } })).toBe(false);
+	});
+});
+
+describe('nextTakeTitle', () => {
+	it('counts on from the highest "Take N"', () => {
+		expect(nextTakeTitle([])).toBe('Take 1');
+		expect(nextTakeTitle(['Take 1', 'Take 3', 'Episode 2'])).toBe('Take 4');
+	});
+
+	it('ignores titles the user chose', () => {
+		expect(nextTakeTitle(['Take 12 (good)', 'Intro'])).toBe('Take 1');
+	});
+});
+
+describe('sessionBackedUp and canDelete', () => {
+	const ready = (downloaded: boolean[]) => {
+		const base = session().recordings[0]!;
+		const segments = downloaded.map((d, i) => ({ ...base.segments[0]!, index: i + 1, path: `seg-${i + 1}.mp4`, downloaded: d }));
+		return { ...session(), recordings: [{ ...base, state: 'ready' as const, segments }] };
+	};
+
+	it('is Backed up only when every Segment has been downloaded', () => {
+		expect(sessionBackedUp(ready([true, true]))).toBe(true);
+		expect(sessionBackedUp(ready([true, false]))).toBe(false);
+		expect(sessionBackedUp(session())).toBe(false);
+	});
+
+	it('allows deleting Ready and Interrupted takes, not ones being captured or finalized', () => {
+		expect(canDelete(ready([false]))).toBe(true);
+		const interrupted = { ...session(), recordings: [{ ...session().recordings[0]!, state: 'interrupted' as const }] };
+		expect(canDelete(interrupted)).toBe(true);
+		expect(canDelete(session())).toBe(false);
 	});
 });
 

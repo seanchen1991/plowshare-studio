@@ -130,10 +130,11 @@
 					void finalize(session);
 				}}
 				onShowTakes={() => (screen = 'takes')}
+				onTakeChanged={refresh}
 			/>
 		</section>
 		<section aria-label="Takes" hidden={screen !== 'takes'}>
-			<TakesScreen {sessions} {progress} onRecover={recover} />
+			<TakesScreen {sessions} {progress} onRecover={recover} onChanged={refresh} />
 		</section>
 	</main>
 {:else}

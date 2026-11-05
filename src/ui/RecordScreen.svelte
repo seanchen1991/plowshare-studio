@@ -22,7 +22,8 @@
 		progress,
 		onStarted,
 		onStopped,
-		onShowTakes
+		onShowTakes,
+		onTakeChanged
 	}: {
 		/** Whether the Record screen is showing; the camera is only on while it is (or while capturing). */
 		active: boolean;
@@ -33,6 +34,8 @@
 		onStarted: (session: Session) => void;
 		onStopped: (session: Session) => void;
 		onShowTakes: () => void;
+		/** The last take was renamed, downloaded or deleted. */
+		onTakeChanged: () => void;
 	} = $props();
 
 	const isMac = /Macintosh|Mac OS X/.test(navigator.userAgent);
@@ -377,7 +380,7 @@
 				<h2>Last take</h2>
 				<button class="link" onclick={onShowTakes}>All takes</button>
 			</div>
-			<ul><TakeRow session={lastTake} {progress} /></ul>
+			<ul><TakeRow session={lastTake} {progress} onChanged={onTakeChanged} /></ul>
 		</section>
 	{/if}
 </div>

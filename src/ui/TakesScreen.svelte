@@ -5,8 +5,14 @@
 	let {
 		sessions,
 		progress,
-		onRecover
-	}: { sessions: Session[]; progress: Record<string, number>; onRecover: (session: Session) => void } = $props();
+		onRecover,
+		onChanged
+	}: {
+		sessions: Session[];
+		progress: Record<string, number>;
+		onRecover: (session: Session) => void;
+		onChanged: () => void;
+	} = $props();
 </script>
 
 <div class="takes">
@@ -16,7 +22,7 @@
 	{:else}
 		<ul>
 			{#each sessions as session (session.id)}
-				<TakeRow {session} progress={progress[session.id]} onRecover={() => onRecover(session)} />
+				<TakeRow {session} progress={progress[session.id]} onRecover={() => onRecover(session)} {onChanged} />
 			{/each}
 		</ul>
 	{/if}

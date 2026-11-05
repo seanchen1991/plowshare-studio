@@ -81,26 +81,28 @@ export function newId(prefix: string, now: Date, random: () => number = Math.ran
 	return `${prefix}_${now.getTime().toString(36).padStart(9, '0')}${suffix}`;
 }
 
-export function defaultTitle(now: Date): string {
-	const when = now.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
-	return `Take – ${when}`;
+/** "Take 4": one more than the highest "Take N" so far. */
+export function nextTakeTitle(titles: string[]): string {
+	const numbers = titles.map((t) => /^Take (\d+)$/.exec(t)?.[1]).filter((n) => n !== undefined).map(Number);
+	return `Take ${Math.max(0, ...numbers) + 1}`;
 }
 
 /** A new Session holding one host Recording with its first Segment, in Capturing. */
 export function newSession(options: {
 	now: Date;
 	random?: () => number;
+	title?: string;
 	video: VideoSettings | null;
 	audio: AudioSettings;
 }): Session {
-	const { now, random = Math.random, video, audio } = options;
+	const { now, random = Math.random, title = 'Take 1', video, audio } = options;
 	const id = newId('ses', now, random);
 	const recordingId = 'rec_01';
 	const paths = segmentPaths(id, recordingId, 1);
 	return {
 		version: 1,
 		id,
-		title: defaultTitle(now),
+		title,
 		createdAt: now.toISOString(),
 		recordings: [
 			{
@@ -169,6 +171,16 @@ export function markInterrupted(session: Session, isRunning: (recordingId: strin
  */
 export function shouldRecoverAutomatically(recording: Recording): boolean {
 	return recording.state === 'interrupted' && !recording.recovery && !recording.finalizeError;
+}
+
+/** Backed up: every Segment of every Recording is finished and has been downloaded. */
+export function sessionBackedUp(session: Session): boolean {
+	return session.recordings.every((r) => r.state === 'ready' && r.segments.every((s) => s.path !== null && s.downloaded));
+}
+
+/** Takes can be deleted unless something is still working on them. */
+export function canDelete(session: Session): boolean {
+	return session.recordings.every((r) => r.state === 'ready' || r.state === 'interrupted');
 }
 
 /** Length of a Recording on the Session timeline, once its Segments have durations. */

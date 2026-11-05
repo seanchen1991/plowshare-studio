@@ -5,9 +5,9 @@
 import { audioBitsPerSecond, videoBitsPerSecond } from '../media/capture.ts';
 import { chooseMimeType, codecsFromMimeType } from '../media/formats.ts';
 import type { ChunkWriterRequest, ChunkWriterResponse } from '../storage/chunk-writer.protocol.ts';
-import { newSession, updateRecording, updateSegment, type AudioSettings, type Session, type VideoSettings } from '../storage/session-file.ts';
+import { newSession, nextTakeTitle, updateRecording, updateSegment, type AudioSettings, type Session, type VideoSettings } from '../storage/session-file.ts';
 import { holdRecording } from '../storage/recording-lock.ts';
-import { changeSession, createSession } from '../storage/sessions.ts';
+import { changeSession, createSession, listSessions } from '../storage/sessions.ts';
 
 export const timesliceMs = 2000;
 /** How often the manifest notes that capture is still running. */
@@ -45,6 +45,7 @@ export async function startTake({ stream, preview, onWritten, onError }: TakeOpt
 
 	let session = newSession({
 		now: new Date(),
+		title: nextTakeTitle((await listSessions()).map((s) => s.title)),
 		video: videoTrack ? videoSettings(videoTrack, codecs.video, recorder) : null,
 		audio: audioSettings(audioTrack, codecs.audio, recorder)
 	});

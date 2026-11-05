@@ -20,6 +20,7 @@ test('records a take, finalizes it and plays it back with seeking', async ({ pag
 
 	// The Session file follows the brief's shape.
 	expect(session.version).toBe(1);
+	expect(session.title).toBe('Take 1');
 	expect(session.recordings).toHaveLength(1);
 	const recording = session.recordings[0]!;
 	expect(recording.state).toBe('ready');
