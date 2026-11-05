@@ -27,6 +27,8 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install --with-deps chromium firefox
+      # Firefox's stand-in mic is Web Audio, which is silent on Linux without a sound server.
+      - run: sudo apt-get install -y pulseaudio && pulseaudio --start --exit-idle-time=-1
       - run: pnpm test:e2e --pass-with-no-tests
       - uses: actions/upload-artifact@v7
         if: failure()

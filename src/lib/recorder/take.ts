@@ -2,16 +2,16 @@
 // chunk-writer worker, which writes it to the Segment's raw file in OPFS. No
 // chunk is kept in memory here.
 
+import { warnBeforeLeaving } from '../browser/leave-warning.ts';
 import { audioBitsPerSecond, videoBitsPerSecond } from '../media/capture.ts';
 import { chooseMimeType, codecsFromMimeType } from '../media/formats.ts';
 import type { ChunkWriterRequest, ChunkWriterResponse } from '../storage/chunk-writer.protocol.ts';
 import { newSession, nextTakeTitle, updateRecording, updateSegment, type AudioSettings, type Session, type VideoSettings } from '../storage/session-file.ts';
 import { holdRecording } from '../storage/recording-lock.ts';
 import { changeSession, createSession, listSessions } from '../storage/sessions.ts';
+import { holdWakeLock } from './wake-lock.ts';
 
 export const timesliceMs = 2000;
-/** How often the manifest notes that capture is still running. */
-const aliveEveryMs = 1000;
 
 export interface Take {
 	session: Session;
@@ -53,6 +53,8 @@ export async function startTake({ stream, preview, onWritten, onError }: TakeOpt
 	const segment = recording.segments[0]!;
 	// Held until stop, so a launch in another tab doesn't take this Recording for a crashed one.
 	const release = await holdRecording(session.id, recording.id);
+	const releaseWakeLock = holdWakeLock();
+	const stopWarning = warnBeforeLeaving();
 	await createSession(session);
 
 	const worker = new Worker(new URL('../storage/chunk-writer.worker.ts', import.meta.url), { type: 'module' });
@@ -72,8 +74,10 @@ export async function startTake({ stream, preview, onWritten, onError }: TakeOpt
 		}
 	};
 
+	const started = performance.now();
 	send({
 		type: 'open',
+		startedAtMs: performance.timeOrigin + started,
 		rawPath: segment.rawPath!,
 		manifestPath: segment.manifestPath!,
 		header: {
@@ -88,10 +92,9 @@ export async function startTake({ stream, preview, onWritten, onError }: TakeOpt
 	});
 
 	const frames = countFrames(videoTrack, preview);
-	const started = performance.now();
 	const sinceStartUs = () => Math.round((performance.now() - started) * 1000);
+	// MediaRecorder's own events, not page timers, drive chunk writing, so a background tab loses nothing.
 	recorder.ondataavailable = (event) => send({ type: 'chunk', data: event.data, timestampUs: sinceStartUs() });
-	const alive = setInterval(() => send({ type: 'alive', timestampUs: sinceStartUs() }), aliveEveryMs);
 	const recorderStopped = new Promise<void>((resolve) => (recorder.onstop = () => resolve()));
 	recorder.start(timesliceMs);
 
@@ -100,7 +103,6 @@ export async function startTake({ stream, preview, onWritten, onError }: TakeOpt
 		async stop() {
 			if (recorder.state !== 'inactive') recorder.stop();
 			await recorderStopped;
-			clearInterval(alive);
 			const delivered = frames.stop();
 			if (!failure) send({ type: 'close', state: 'finalizing' });
 			await workerClosed;
@@ -114,6 +116,8 @@ export async function startTake({ stream, preview, onWritten, onError }: TakeOpt
 				)
 			);
 			release();
+			releaseWakeLock();
+			stopWarning();
 			return session;
 		}
 	};
@@ -129,6 +133,10 @@ function countFrames(track: VideoTrackWithStats | undefined, preview: HTMLVideoE
 	if (!preview || !('requestVideoFrameCallback' in preview)) return { stop: () => null };
 	let count = 0;
 	let counting = true;
+	// A hidden tab draws no frames, so the preview's count means nothing once the tab has been hidden.
+	let wasHidden = document.visibilityState === 'hidden';
+	const onVisibility = () => (wasHidden ||= document.visibilityState === 'hidden');
+	document.addEventListener('visibilitychange', onVisibility);
 	const onFrame = () => {
 		if (!counting) return;
 		count++;
@@ -138,7 +146,8 @@ function countFrames(track: VideoTrackWithStats | undefined, preview: HTMLVideoE
 	return {
 		stop: () => {
 			counting = false;
-			return count;
+			document.removeEventListener('visibilitychange', onVisibility);
+			return wasHidden ? null : count;
 		}
 	};
 }

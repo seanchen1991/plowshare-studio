@@ -1,6 +1,8 @@
 // Appends recorded chunks to a Segment's raw file in OPFS. Each chunk is
 // flushed to disk before it is listed in the manifest, so the manifest never
-// lists bytes that aren't there. Messages are handled strictly in order.
+// lists bytes that aren't there. Messages are handled strictly in order. The
+// alive lines run on this worker's timer: browsers throttle timers in a
+// background tab's page, not in its workers.
 
 import { manifestLine, type ManifestEntry } from './manifest.ts';
 import { fileHandle } from './opfs.ts';
@@ -12,6 +14,10 @@ let manifest: FileSystemSyncAccessHandle | null = null;
 let rawOffset = 0;
 let chunks = 0;
 let failed = false;
+let alive: ReturnType<typeof setInterval> | undefined;
+
+/** How often the manifest notes that capture is still running. */
+const aliveEveryMs = 1000;
 
 function post(message: ChunkWriterResponse) {
 	self.postMessage(message);
@@ -30,6 +36,11 @@ async function handle(request: ChunkWriterRequest) {
 			raw.truncate(0);
 			manifest.truncate(0);
 			append(request.header);
+			const { startedAtMs } = request;
+			alive = setInterval(() => {
+				if (!manifest || failed) return;
+				append({ kind: 'alive', timestampUs: Math.round((performance.timeOrigin + performance.now() - startedAtMs) * 1000) });
+			}, aliveEveryMs);
 			break;
 		}
 		case 'chunk': {
@@ -44,11 +55,8 @@ async function handle(request: ChunkWriterRequest) {
 			post({ type: 'written', chunks, bytes: rawOffset });
 			break;
 		}
-		case 'alive': {
-			if (manifest) append({ kind: 'alive', timestampUs: request.timestampUs });
-			break;
-		}
 		case 'close': {
+			clearInterval(alive);
 			append({ kind: 'state', state: request.state });
 			raw!.close();
 			manifest!.close();

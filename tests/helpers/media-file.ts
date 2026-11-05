@@ -43,12 +43,17 @@ export function decodeAudio(file: string, sampleRate = 8000): Float32Array {
 
 /** Presentation times of every video frame, in seconds, in order. */
 export function videoFrameTimes(file: string): number[] {
-	const out = run('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'packet=pts_time', '-of', 'csv=p=0', file]);
+	return packetTimes(file, 'v:0');
+}
+
+/** Presentation times of every packet in one stream (`v:0`, `a:0`), sorted. */
+export function packetTimes(file: string, stream: string): number[] {
+	const out = run('ffprobe', ['-v', 'error', '-select_streams', stream, '-show_entries', 'packet=pts_time', '-of', 'csv=p=0', file]);
 	return out
 		.toString()
 		.trim()
 		.split('\n')
-		.map(Number)
+		.map((line) => Number(line.replace(/,$/, '')))
 		.filter((t) => Number.isFinite(t))
 		.sort((a, b) => a - b);
 }

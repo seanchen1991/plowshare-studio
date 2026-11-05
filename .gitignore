@@ -6,3 +6,4 @@ test-results/
 playwright-report/
 tests/fixtures/.generated/
 spikes/*/out/
+test-results-long/

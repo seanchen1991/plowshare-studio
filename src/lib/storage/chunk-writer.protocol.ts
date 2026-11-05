@@ -4,9 +4,15 @@ import type { ManifestHeader } from './manifest.ts';
 import type { RecordingState } from './session-file.ts';
 
 export type ChunkWriterRequest =
-	| { type: 'open'; rawPath: string; manifestPath: string; header: ManifestHeader }
+	| {
+			type: 'open';
+			rawPath: string;
+			manifestPath: string;
+			header: ManifestHeader;
+			/** When capture started, as `performance.timeOrigin + performance.now()`, for the worker's alive lines. */
+			startedAtMs: number;
+	  }
 	| { type: 'chunk'; data: Blob; timestampUs: number }
-	| { type: 'alive'; timestampUs: number }
 	| { type: 'close'; state: RecordingState };
 
 export type ChunkWriterResponse =

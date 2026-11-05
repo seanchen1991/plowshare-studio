@@ -40,7 +40,7 @@ export default defineConfig({
 		{
 			// Only the specs that must hold in Firefox too; the camera and mic come from tests/helpers/fake-media.ts.
 			name: 'firefox',
-			testMatch: /(recover|library)\.spec\.ts/,
+			testMatch: /(recover|library|background|staying-alive)\.spec\.ts/,
 			use: {
 				...devices['Desktop Firefox'],
 				launchOptions: {

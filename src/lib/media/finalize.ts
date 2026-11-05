@@ -3,6 +3,7 @@
 // file and manifest deleted. Recovering an Interrupted Recording takes the same
 // path.
 
+import { warnBeforeLeaving } from '../browser/leave-warning.ts';
 import { parseManifest } from '../storage/manifest.ts';
 import { fileExists, readFile, removeFile } from '../storage/opfs.ts';
 import { holdRecording } from '../storage/recording-lock.ts';
@@ -31,10 +32,12 @@ export async function finalizeRecording(
 	onProgress: (progress: number) => void = () => {}
 ): Promise<Session> {
 	const release = await holdRecording(sessionId, recordingId);
+	const stopWarning = warnBeforeLeaving();
 	try {
 		return await finalizeHeld(sessionId, recordingId, onProgress);
 	} finally {
 		release();
+		stopWarning();
 	}
 }
 
