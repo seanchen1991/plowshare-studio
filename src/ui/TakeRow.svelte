@@ -49,8 +49,10 @@
 		<p class="problem" role="alert" data-testid="interrupted">
 			{#if failed}
 				Couldn't recover this take: {failed}.
+			{:else if recovery}
+				The browser closed while this take was being recovered. Recover tries again.
 			{:else}
-				The browser closed during this take. Recover saves everything up to the last few seconds.
+				The browser closed during this take.
 			{/if}
 		</p>
 	{:else if failed}

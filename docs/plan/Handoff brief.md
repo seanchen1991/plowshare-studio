@@ -62,7 +62,7 @@ Each Recording is in one state, shown in the library:
 - **Paused**: a device dropped or the computer slept; waiting for the user.
 - **Finalizing**: starts automatically on stop. A worker remuxes each raw Segment with Mediabunny into a finished, seekable file (MP4 for H.264, WebM otherwise), copying tracks with `copy: { mode: 'forced' }` and never re-encoding, with progress shown. The raw file is deleted only after the finished file checks out: every input track is present and its duration roughly matches the manifest.
 - **Ready**: playable, renameable, downloadable, editable.
-- **Interrupted**: the browser died during Capturing or Finalizing. On load, offer **Recover**, which trims the raw file back to the last complete chunk in the manifest and then goes through Finalizing, the same path as a normal stop. Show what was saved, for example "Recovered 47:12 of about 47:15". Never recover automatically.
+- **Interrupted**: the browser died during Capturing or Finalizing. On load, recover it automatically: trim the raw file back to the last complete chunk in the manifest and go through Finalizing, the same path as a normal stop. Show what was saved, for example "Recovered 47:12 of about 47:15". Recover automatically only once: if that try fails, or the browser dies during it, the take stays Interrupted and the library offers **Recover**, so a take that crashes the browser can't do so on every launch.
 
 ### Device drops and sleep (Segments)
 
@@ -91,7 +91,7 @@ A pause button the user presses, screen recording, markers during recording, an 
 ### Done when
 
 - [ ] A 60-minute 1080p30 recording in Chrome finishes and plays back with working seeking.
-- [ ] Killing the **browser process** mid-recording, then relaunching and choosing Recover, keeps everything up to the last few seconds, in Chrome and Firefox.
+- [ ] Killing the **browser process** mid-recording, then relaunching, recovers everything up to the last few seconds, in Chrome and Firefox.
 - [ ] A 10-minute recording works the same way in Firefox.
 - [ ] Memory use stays flat during a long recording.
 - [ ] A 10-minute take with the tab in the background loses nothing.

@@ -162,6 +162,15 @@ export function markInterrupted(session: Session, isRunning: (recordingId: strin
 	};
 }
 
+/**
+ * Interrupted Recordings are recovered automatically once. One that already
+ * had a try (it failed, or the browser died during it) waits for the user to
+ * choose Recover, so a take that crashes the browser can't do it on every launch.
+ */
+export function shouldRecoverAutomatically(recording: Recording): boolean {
+	return recording.state === 'interrupted' && !recording.recovery && !recording.finalizeError;
+}
+
 /** Length of a Recording on the Session timeline, once its Segments have durations. */
 export function recordingDurationUs(recording: Recording): number | null {
 	const last = recording.segments.at(-1);

@@ -1,8 +1,9 @@
 // Crash recovery: kill the browser process (not just the page) mid-take,
-// relaunch it on the same profile, and Recover. Runs in Chrome and Firefox.
+// relaunch it on the same profile, and check the take is recovered. Runs in
+// Chrome and Firefox.
 
 import { execFileSync } from 'node:child_process';
-import { expect, test, type BrowserContext, type Page } from '@playwright/test';
+import { expect, test, type BrowserContext, type Locator, type Page } from '@playwright/test';
 import { fixtureSpec as s } from '../fixtures/spec.ts';
 import { readOpfsJson, saveOpfsFile } from '../helpers/app.ts';
 import { detectBeeps } from '../helpers/beeps.ts';
@@ -47,26 +48,31 @@ async function elapsedSeconds(page: Page): Promise<number> {
 	return m! * 60 + sec!;
 }
 
-/** Relaunches, finds the Interrupted take and recovers it. Returns its Session file and the finished file on disk. */
-async function relaunchAndRecover(outputPath: (name: string) => string) {
-	const context = await launch();
-	const page = context.pages()[0] ?? (await context.newPage());
-	await page.goto('/');
-	await expect(page.getByTestId('interrupted-notice')).toHaveText(/A take was cut off when the browser closed/);
-	await page.getByRole('button', { name: 'Recover in Takes' }).click();
-
-	const take = page.getByRole('region', { name: 'Takes' }).getByTestId('session');
-	await expect(take).toHaveCount(1);
-	await expect(take).toHaveAttribute('data-state', 'interrupted');
-	await take.getByRole('button', { name: 'Recover' }).click();
-	await expect(take).toHaveAttribute('data-state', 'ready', { timeout: 60_000 });
-	await expect(page.getByTestId('interrupted-notice')).toBeHidden();
-
+/** The take's Session file, and its finished file copied to disk. */
+async function savedTake(page: Page, take: Locator, outputPath: (name: string) => string) {
 	const session = await readOpfsJson<Session>(page, `sessions/${await take.getAttribute('data-session-id')}/session.json`);
 	const segment = session.recordings[0]!.segments[0]!;
 	const file = outputPath('recovered' + segment.path!.slice(segment.path!.lastIndexOf('.')));
 	await saveOpfsFile(page, segment.path!, file);
-	return { context, page, take, session, file };
+	return { session, file };
+}
+
+/** Relaunches and waits for the cut-off take to be recovered on its own. */
+async function relaunchAndWait(outputPath: (name: string) => string) {
+	const context = await launch();
+	const page = context.pages()[0] ?? (await context.newPage());
+	await page.goto('/');
+	const notice = page.getByTestId('recovery-notice');
+	await expect(notice).toHaveText(/^Recovered a take cut off when the browser closed: 0:\d\d of about 0:\d\d\. Show in Takes$/, {
+		timeout: 60_000
+	});
+	await notice.getByRole('button', { name: 'Show in Takes' }).click();
+	await expect(notice).toBeHidden();
+
+	const take = page.getByRole('region', { name: 'Takes' }).getByTestId('session');
+	await expect(take).toHaveCount(1);
+	await expect(take).toHaveAttribute('data-state', 'ready');
+	return { context, page, take, ...(await savedTake(page, take, outputPath)) };
 }
 
 test('recovers a take after the browser is killed mid-recording', async ({}, testInfo) => {
@@ -79,7 +85,7 @@ test('recovers a take after the browser is killed mid-recording', async ({}, tes
 	const killedAt = await elapsedSeconds(page);
 	await killBrowser(first);
 
-	const { context, take, session, file } = await relaunchAndRecover((name) => testInfo.outputPath(name));
+	const { context, take, session, file } = await relaunchAndWait((name) => testInfo.outputPath(name));
 	const recording = session.recordings[0]!;
 	const segment = recording.segments[0]!;
 	expect(recording.state).toBe('ready');
@@ -132,12 +138,45 @@ test('recovers a take after the browser is killed while Finalizing', async ({}, 
 	await page.waitForTimeout(1000);
 	await killBrowser(first);
 
-	const { context, session, file } = await relaunchAndRecover((name) => testInfo.outputPath(name));
+	const { context, session, file } = await relaunchAndWait((name) => testInfo.outputPath(name));
 	const segment = session.recordings[0]!.segments[0]!;
 	// Stopped cleanly before the crash, so nothing at all is lost.
 	expect(Math.abs(segment.durationUs! - session.recordings[0]!.recovery!.expectedUs) / 1e6).toBeLessThan(1);
 	expect(Math.abs(probeDurationSeconds(file) - 6)).toBeLessThan(1.5);
 	await context.close();
+});
+
+test('asks before trying again when the browser died during automatic recovery', async ({}, testInfo) => {
+	const first = await launch();
+	const page = first.pages()[0] ?? (await first.newPage());
+	await page.goto('/');
+	await page.getByRole('button', { name: 'Record' }).click();
+	await expect(page.getByTestId('elapsed')).toBeVisible({ timeout: 10_000 });
+	await page.waitForTimeout(6000);
+	await killBrowser(first);
+
+	// The automatic recovery hangs (the finalize worker never loads), and the browser dies again.
+	const second = await launch();
+	await second.route('**/finalize.worker*', () => {});
+	const again = second.pages()[0] ?? (await second.newPage());
+	await again.goto('/');
+	await expect(again.getByTestId('recovery-notice')).toHaveText(/^Recovering a take cut off when the browser closed/);
+	await killBrowser(second);
+
+	const third = await launch();
+	const last = third.pages()[0] ?? (await third.newPage());
+	await last.goto('/');
+	const notice = last.getByTestId('recovery-notice');
+	await expect(notice).toHaveText(/couldn't be recovered automatically/);
+	await notice.getByRole('button', { name: 'Recover in Takes' }).click();
+	const take = last.getByRole('region', { name: 'Takes' }).getByTestId('session');
+	await expect(take).toHaveAttribute('data-state', 'interrupted');
+	await expect(take.getByTestId('interrupted')).toHaveText(/being recovered/);
+	await take.getByRole('button', { name: 'Recover' }).click();
+	await expect(take).toHaveAttribute('data-state', 'ready', { timeout: 60_000 });
+	const { file } = await savedTake(last, take, (name) => testInfo.outputPath(name));
+	expect(Math.abs(probeDurationSeconds(file) - 6)).toBeLessThan(3);
+	await third.close();
 });
 
 test('a take recording in another tab is not taken for an interrupted one', async ({ context }) => {
@@ -150,7 +189,7 @@ test('a take recording in another tab is not taken for an interrupted one', asyn
 	await other.goto('/');
 	await other.getByRole('tab', { name: 'Takes' }).click();
 	await expect(other.getByTestId('session')).toHaveAttribute('data-state', 'capturing');
-	await expect(other.getByTestId('interrupted-notice')).toBeHidden();
+	await expect(other.getByTestId('recovery-notice')).toBeHidden();
 
 	await recorder.getByRole('button', { name: 'Stop' }).click();
 	await expect(recorder.getByTestId('session').first()).toHaveAttribute('data-state', 'ready', { timeout: 30_000 });

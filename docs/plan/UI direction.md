@@ -19,7 +19,7 @@ Centered column: a large 16:9 camera preview; the camera and mic as pill-shaped 
 
 ### Takes
 
-A list, one row per Session: title with date, size and resolution under it; a small waveform thumbnail; duration; a state chip (Capturing, Finalizing with %, Ready, Interrupted); a "Not backed up" badge when it applies; actions at the end of the row: Play, Download, **Edit** (primary), or **Recover** for an Interrupted take.
+A list, one row per Session: title with date, size and resolution under it; a small waveform thumbnail; duration; a state chip (Capturing, Finalizing with %, Ready, Interrupted); a "Not backed up" badge when it applies; actions at the end of the row: Play, Download, **Edit** (primary), or **Recover** for an Interrupted take that automatic recovery couldn't finish.
 
 ### Edit (phase 2)
 

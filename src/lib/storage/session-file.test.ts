@@ -9,6 +9,7 @@ import {
 	updateRecording,
 	updateSegment,
 	markInterrupted,
+	shouldRecoverAutomatically,
 	type AudioSettings,
 	type Session
 } from './session-file.ts';
@@ -113,6 +114,20 @@ describe('markInterrupted', () => {
 	it('leaves Ready and Interrupted Recordings alone', () => {
 		const s = { ...session(), recordings: [withState('ready'), withState('interrupted', 'rec_02')] };
 		expect(markInterrupted(s, () => false)).toEqual(s);
+	});
+});
+
+describe('shouldRecoverAutomatically', () => {
+	const interrupted = { ...session().recordings[0]!, state: 'interrupted' as const };
+
+	it('recovers an Interrupted Recording on its own once', () => {
+		expect(shouldRecoverAutomatically(interrupted)).toBe(true);
+		expect(shouldRecoverAutomatically({ ...interrupted, state: 'finalizing' })).toBe(false);
+	});
+
+	it('leaves it to the user after a failed try, or one the browser died during', () => {
+		expect(shouldRecoverAutomatically({ ...interrupted, finalizeError: 'bad file' })).toBe(false);
+		expect(shouldRecoverAutomatically({ ...interrupted, recovery: { expectedUs: 1 } })).toBe(false);
 	});
 });
 

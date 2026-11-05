@@ -2,11 +2,12 @@
 	import { onMount } from 'svelte';
 	import { detectBrowserSupport } from '../lib/browser/support';
 	import { finalizeRecording, recoverRecording } from '../lib/media/finalize';
-	import { sessionState, type Session } from '../lib/storage/session-file';
+	import { recordingDurationUs, sessionState, shouldRecoverAutomatically, type Session } from '../lib/storage/session-file';
 	import { checkSessionsOnLaunch, listSessions } from '../lib/storage/sessions';
 	import RecordScreen from './RecordScreen.svelte';
 	import SegmentedControl from './SegmentedControl.svelte';
 	import TakesScreen from './TakesScreen.svelte';
+	import { formatDuration } from './format';
 
 	type Screen = 'record' | 'takes' | 'edit';
 
@@ -30,15 +31,41 @@
 	let lastTakeId = $state<string | null>(null);
 
 	const lastTake = $derived(sessions.find((s) => s.id === lastTakeId) ?? null);
-	const interrupted = $derived(sessions.filter((s) => sessionState(s) === 'interrupted').length);
+	// Takes recovered automatically on this visit, until the user has looked at Takes.
+	let recoveredIds = $state<string[]>([]);
+	let recovering = $state(0);
+	const interrupted = $derived(sessions.filter((s) => sessionState(s) === 'interrupted' && progress[s.id] === undefined).length);
+	const recovered = $derived(sessions.filter((s) => recoveredIds.includes(s.id) && sessionState(s) === 'ready'));
+
+	$effect(() => {
+		if (screen === 'takes') recoveredIds = [];
+	});
+
+	function recoveredSummary(session: Session): string {
+		const recording = session.recordings[0]!;
+		const durationUs = recordingDurationUs(recording) ?? 0;
+		const expectedUs = Math.max(recording.recovery?.expectedUs ?? 0, durationUs);
+		return `${formatDuration(durationUs)} of about ${formatDuration(expectedUs)}`;
+	}
 
 	async function refresh() {
 		sessions = await listSessions();
 	}
 
 	onMount(() => {
-		if (support.supported) void checkSessionsOnLaunch().finally(refresh);
+		if (support.supported) void launch();
 	});
+
+	async function launch() {
+		await checkSessionsOnLaunch().finally(refresh);
+		const cutOff = sessions.filter((s) => s.recordings.some(shouldRecoverAutomatically));
+		recovering = cutOff.length;
+		for (const session of cutOff) {
+			await recover(session);
+			if (sessions.find((s) => s.id === session.id && sessionState(s) === 'ready')) recoveredIds = [...recoveredIds, session.id];
+			recovering--;
+		}
+	}
 
 	async function finalize(session: Session) {
 		const recordingId = session.recordings[0]!.id;
@@ -67,11 +94,26 @@
 	</header>
 	<!-- Both screens stay mounted, so a take keeps recording while Takes is open. -->
 	<main data-testid="home">
-		{#if interrupted > 0 && screen === 'record'}
-			<p class="interrupted" role="alert" data-testid="interrupted-notice">
-				{interrupted === 1 ? 'A take was' : `${interrupted} takes were`} cut off when the browser closed.
-				<button type="button" onclick={() => (screen = 'takes')}>Recover in Takes</button>
-			</p>
+		{#if screen === 'record'}
+			{#if interrupted > 0}
+				<p class="notice problem" role="alert" data-testid="recovery-notice">
+					{interrupted === 1 ? 'A take was' : `${interrupted} takes were`} cut off when the browser closed and couldn't be recovered automatically.
+					<button type="button" onclick={() => (screen = 'takes')}>Recover in Takes</button>
+				</p>
+			{:else if recovering > 0}
+				<p class="notice working" role="status" data-testid="recovery-notice">
+					Recovering {recovering === 1 ? 'a take' : `${recovering} takes`} cut off when the browser closed…
+				</p>
+			{:else if recovered.length > 0}
+				<p class="notice ready" role="status" data-testid="recovery-notice">
+					{#if recovered.length === 1}
+						Recovered a take cut off when the browser closed: {recoveredSummary(recovered[0]!)}.
+					{:else}
+						Recovered {recovered.length} takes cut off when the browser closed.
+					{/if}
+					<button type="button" onclick={() => (screen = 'takes')}>Show in Takes</button>
+				</p>
+			{/if}
 		{/if}
 		<section aria-label="Record" hidden={screen !== 'record'}>
 			<RecordScreen
@@ -129,7 +171,7 @@
 	main {
 		padding: 32px 24px 64px;
 	}
-	.interrupted {
+	.notice {
 		display: flex;
 		flex-wrap: wrap;
 		justify-content: center;
@@ -138,11 +180,21 @@
 		margin: -12px auto 20px;
 		padding: 8px 12px;
 		border-radius: var(--radius-panel);
-		background: var(--problem-bg);
-		color: var(--problem-fg);
 		font-size: var(--text-small);
 	}
-	.interrupted button {
+	.notice.problem {
+		background: var(--problem-bg);
+		color: var(--problem-fg);
+	}
+	.notice.working {
+		background: var(--working-bg);
+		color: var(--working-fg);
+	}
+	.notice.ready {
+		background: var(--ready-bg);
+		color: var(--ready-fg);
+	}
+	.notice button {
 		border: 0;
 		background: none;
 		color: inherit;

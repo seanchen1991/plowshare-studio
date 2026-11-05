@@ -26,7 +26,7 @@ One unbroken stretch of capture inside a **Recording**, ending only when a devic
 _Avoid_: Clip, chunk, piece (for anything produced by editing)
 
 **Capturing** / **Paused** / **Finalizing** / **Ready** / **Interrupted**:
-The states of a **Recording**: being captured; stopped by a device drop or sleep and waiting for the user to resume; being turned into a finished, seekable file after stop or recovery; finished and usable; or cut off by a crash and waiting for the user to choose Recover.
+The states of a **Recording**: being captured; stopped by a device drop or sleep and waiting for the user to resume; being turned into a finished, seekable file after stop or recovery; finished and usable; or cut off by a crash and not yet recovered.
 _Avoid_: "Recording" as a state name (it is the noun), processing, saved
 
 **Capture gap**:
