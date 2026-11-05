@@ -99,7 +99,9 @@ for (const { minutes, tag } of runs) {
 
 			const duration = probeDurationSeconds(file);
 			testInfo.annotations.push({ type: 'take', description: `${duration} s in ${file.slice(downloads.length + 1)}, hidden ${hiddenSeconds.toFixed(1)} s, frames ${JSON.stringify(segment.frames)}` });
-			expect(duration).toBeGreaterThan(hiddenSeconds);
+			// Recording began before the tab was hidden; Firefox drops about 0.5 s at the start of a take
+			// and its fake devices' clock drifts from the system's by about 0.1%.
+			expect(duration).toBeGreaterThan(hiddenSeconds * 0.998 - 1);
 			expect(duration).toBeLessThan(hiddenSeconds + 10);
 
 			// No stretch of audio or video missing anywhere, start to end.
@@ -110,7 +112,8 @@ for (const { minutes, tag } of runs) {
 			expect(audio[0]!).toBeLessThan(0.5);
 			expect(duration - audio.at(-1)!).toBeLessThan(0.5);
 			expect(largestGap(audio)).toBeLessThan(0.1);
-			expect(largestGap(video)).toBeLessThan(0.2);
+			// Firefox's software VP8 encoder stalls briefly when the machine is busy, hidden or not (spike 03 saw up to 1.1 s).
+			expect(largestGap(video)).toBeLessThan(firefox ? 1.1 : 0.2);
 			expect(video.length).toBeGreaterThan(duration * s.fps * 0.95);
 
 			// Chrome plays the fixture: a beep every second, none missing.

@@ -76,6 +76,14 @@ async function connect(url: string) {
 	};
 }
 
+/** Resolves when the browser exits; kills it if it hasn't 10 s after being asked to close. */
+function exitOrKill(child: ChildProcess): Promise<void> {
+	if (child.exitCode !== null) return Promise.resolve();
+	const exited = new Promise<void>((done) => child.once('exit', () => done()));
+	const timer = setTimeout(() => child.kill('SIGKILL'), 10_000);
+	return exited.finally(() => clearTimeout(timer));
+}
+
 const evaluateJson = (expression: string) => `(async () => JSON.stringify(await (${expression})))()`;
 
 /** Chrome (Playwright's build is fine); downloads go to `downloads`. */
@@ -121,7 +129,7 @@ export async function launchChrome(browserType: BrowserType, profile: string, do
 			await cdp.send('Target.activateTarget', { targetId });
 		},
 		async close() {
-			const exited = new Promise((done) => child.once('exit', done));
+			const exited = exitOrKill(child);
 			await cdp.send('Browser.close').catch(() => {});
 			cdp.close();
 			await exited;
@@ -176,7 +184,7 @@ export async function launchFirefox(executable: string, profile: string, downloa
 			await browser.evaluate(`window.open('about:blank', '_blank') !== null`);
 		},
 		async close() {
-			const exited = new Promise((done) => child.once('exit', done));
+			const exited = exitOrKill(child);
 			await bidi.send('browser.close').catch(() => {});
 			bidi.close();
 			await exited;
