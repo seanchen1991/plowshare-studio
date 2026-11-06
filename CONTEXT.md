@@ -34,12 +34,22 @@ The stretch of a **Session**'s timeline between two **Segments** where nothing w
 _Avoid_: Dropout, hole, silence (silence is captured audio)
 
 **Backed up**:
-A **Session** whose **Recordings** have had every **Segment** stored outside the browser, by download or by copying to the connected Google Drive; it backs up the footage, not the Session's timing.
+A **Session** whose **Recordings** have had every **Segment** stored outside the browser, by download, by copying to the **Backup folder**, or by copying to the connected Google Drive; it backs up the footage, not the Session's timing.
 _Avoid_: Saved, exported (export makes an episode from a Project), synced
 
 **Recording time left**:
 How much longer capture can run before the disk can no longer hold both the raw and the finished copy of the current **Recording**.
 _Avoid_: Quota, free space (those are inputs to it)
+
+### Library
+
+**Show**:
+A podcast the host records for, with a name; it groups **Sessions** and gives them a place in the **Backup folder**.
+_Avoid_: Project (a Project is one edit), podcast, series, channel
+
+**Backup folder**:
+A folder on the user's computer, chosen once, that **Sessions** are copied into as they become Ready: each **Show** gets its own folder inside it, and Sessions in no Show go at its top level.
+_Avoid_: Library (that is the app's list of takes), export folder, downloads
 
 ### Editing
 
@@ -72,6 +82,8 @@ _Avoid_: Segment, clip
 - A **Cut** belongs to exactly one **Session** within one **Project**, and never crosses into the next Session
 - Adding or removing **Cuts** never changes a **Recording** or its **Segments**
 - Recording creates a **Session**; only opening Sessions in the editor creates a **Project**
+- A **Session** belongs to at most one **Show**; a **Show** has many Sessions
+- A **Project** uses Sessions whatever their **Show**; Shows don't own Projects
 - Each **Recording** has its own state; a **Session** is Ready only when all its Recordings are
 - A device drop closes the current **Segment** and **Pauses** the Recording; resuming starts a new Segment in the same Recording, leaving a **Capture gap**
 - Every **Capture gap** is offered as a **Suggested cut**
@@ -90,4 +102,5 @@ _Avoid_: Segment, clip
 - "take" and "recording" were used interchangeably — resolved: a take is a **Session**; a **Recording** is one Participant's capture within it. In solo use they coincide.
 - "segment" risked meaning both a capture interruption and a piece left after editing — resolved: **Segment** is capture-only; editing produces **Cuts** and **Kept ranges**.
 - "Recording" was proposed as both the noun and the in-progress state — resolved: the state is **Capturing**.
+- "project" was used for a podcast with its own folder of takes — resolved: that is a **Show**; a **Project** stays one edit.
 - The Brief's data model calls Recordings in a Project `sources` — resolved: replaced by **Sessions** containing **Tracks**.
