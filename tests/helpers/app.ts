@@ -76,8 +76,12 @@ export interface SeedSegment {
  * Writes a Ready take straight into OPFS, with finished files of the given
  * sizes (zeros, not playable), then reloads so the app lists it. Faster than
  * recording, and allows several Segments before the app can record them.
+ * `adjust` changes the Session file before it is written, for other states.
  */
-export async function seedTake(page: Page, options: { title: string; createdAt: string; segments: SeedSegment[] }): Promise<Session> {
+export async function seedTake(
+	page: Page,
+	options: { title: string; createdAt: string; segments: SeedSegment[]; adjust?: (session: Session) => void }
+): Promise<Session> {
 	const id = `ses_seed${Math.random().toString(36).slice(2, 8)}`;
 	let startUs = 0;
 	const session: Session = {
@@ -110,7 +114,11 @@ export async function seedTake(page: Page, options: { title: string; createdAt: 
 			}
 		]
 	};
-	const files = session.recordings[0]!.segments.map((s, i) => ({ path: s.path!, bytes: options.segments[i]!.bytes }));
+	options.adjust?.(session);
+	// A raw file left by `adjust` gets the same zeros: not a recording, so recovering it fails.
+	const files = session.recordings[0]!.segments.flatMap((s, i) =>
+		[s.path, s.rawPath].filter((path) => path !== null).map((path) => ({ path, bytes: options.segments[i]!.bytes }))
+	);
 	await page.evaluate(
 		async ({ session, files }) => {
 			async function open(path: string) {

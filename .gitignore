@@ -7,3 +7,5 @@ playwright-report/
 tests/fixtures/.generated/
 spikes/*/out/
 test-results-long/
+test-results-hardware/
+test-results-review/

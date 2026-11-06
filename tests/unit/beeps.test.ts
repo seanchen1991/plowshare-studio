@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { fixtureSpec as s } from '../fixtures/spec.ts';
-import { detectBeeps } from '../helpers/beeps.ts';
+import { detectBeeps, toneOnsets } from '../helpers/beeps.ts';
 import { synthesizeFixtureAudio } from '../helpers/fixture-audio.ts';
 
 describe('detectBeeps', () => {
@@ -40,5 +40,30 @@ describe('detectBeeps', () => {
 
 	it('returns nothing for silence', () => {
 		expect(detectBeeps(new Float32Array(s.sampleRate), s.sampleRate)).toEqual([]);
+	});
+});
+
+describe('toneOnsets', () => {
+	/** The fixture as a mic across the room hears it: much quieter, under louder broadband noise. */
+	function throughTheRoom(seconds: number, gain: number, noise: number) {
+		const samples = synthesizeFixtureAudio(seconds);
+		let seed = 7;
+		for (let i = 0; i < samples.length; i++) {
+			seed = (seed * 16807) % 2147483647;
+			samples[i] = samples[i]! * gain + (seed / 2147483647 - 0.5) * noise;
+		}
+		return samples;
+	}
+	const tones = [s.toneHz, s.markerHz];
+
+	it('finds every beep 40 dB down under noise louder than the beeps', () => {
+		const onsets = toneOnsets(throughTheRoom(12, 0.01, 0.03), s.sampleRate, tones);
+		expect(onsets.map(Math.round)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+		onsets.forEach((t, second) => expect(Math.abs(t - second)).toBeLessThan(0.03));
+	});
+
+	it('finds nothing in noise alone', () => {
+		expect(toneOnsets(throughTheRoom(5, 0, 0.03), s.sampleRate, tones)).toEqual([]);
+		expect(toneOnsets(new Float32Array(5 * s.sampleRate), s.sampleRate, tones)).toEqual([]);
 	});
 });
