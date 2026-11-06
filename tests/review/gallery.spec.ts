@@ -191,6 +191,16 @@ for (const size of widths) {
 			await shot(page, testInfo, 'takes-8-no-room-to-finish', { compare: true });
 		});
 
+		test('The browser hasn’t agreed to keep recordings', async ({ page }, testInfo) => {
+			// Asked on an earlier visit, and refused (as Playwright's contexts always are).
+			await page.addInitScript(() => localStorage.setItem('plowshare.persistAsked', 'yes'));
+			await page.goto('/');
+			await seedTake(page, { title: 'Episode 5', createdAt, segments: [{ extension: 'mp4', bytes: 2_000_000, durationUs: minutes(20) }] });
+			await page.getByRole('tab', { name: 'Takes' }).click();
+			await page.getByTestId('persistence-notice').getByText('How to fix this').click();
+			await shot(page, testInfo, 'takes-9-persistence-notice', { compare: true });
+		});
+
 		test('A private window', async ({ page }, testInfo) => {
 			await page.addInitScript(() => {
 				navigator.storage.getDirectory = () => Promise.reject(new DOMException('Security error when calling GetDirectory', 'SecurityError'));
