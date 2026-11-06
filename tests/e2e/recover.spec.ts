@@ -199,3 +199,23 @@ test('a take recording in another tab is not taken for an interrupted one', asyn
 	await recorder.getByRole('button', { name: 'Stop' }).click();
 	await expect(recorder.getByTestId('session').first()).toHaveAttribute('data-state', 'ready', { timeout: 30_000 });
 });
+
+test('a recovered take keeps its Show', async ({}, testInfo) => {
+	const first = await launch();
+	const page = first.pages()[0] ?? (await first.newPage());
+	await page.goto('/');
+	const picker = page.getByRole('region', { name: 'Record' }).getByRole('combobox', { name: 'Show', exact: true });
+	await picker.selectOption({ label: 'New show…' });
+	const dialog = page.getByRole('dialog', { name: 'New show' });
+	await dialog.getByRole('textbox', { name: 'Name' }).fill('Tilling Our Commons');
+	await dialog.getByRole('button', { name: 'Create' }).click();
+	await page.getByRole('button', { name: 'Record' }).click();
+	await expect(page.getByTestId('elapsed')).toBeVisible({ timeout: 10_000 });
+	await page.waitForTimeout(5000);
+	await killBrowser(first);
+
+	const { context, take, session } = await relaunchAndWait((name) => testInfo.outputPath(name));
+	expect(session.showId).toMatch(/^show_/);
+	await expect(take.getByTestId('take-details')).toContainText('Tilling Our Commons');
+	await context.close();
+});

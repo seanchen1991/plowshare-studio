@@ -52,6 +52,11 @@ describe('newSession', () => {
 	it('allows audio-only takes', () => {
 		expect(newSession({ now, video: null, audio }).recordings[0]!.video).toBeNull();
 	});
+
+	it('is for the given Show, or none', () => {
+		expect(session().showId).toBeNull();
+		expect(newSession({ now, showId: 'show_1', video, audio }).showId).toBe('show_1');
+	});
 });
 
 describe('ids and paths', () => {

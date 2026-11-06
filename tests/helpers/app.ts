@@ -2,6 +2,7 @@
 
 import { expect, type Page } from '@playwright/test';
 import type { Session } from '../../src/lib/storage/session-file.ts';
+import type { Show, ShowsFile } from '../../src/lib/storage/show-file.ts';
 
 /**
  * Records a take of about `seconds` (after the 3-2-1 countdown) and waits until
@@ -141,4 +142,16 @@ export async function seedTake(
 	);
 	await page.reload();
 	return session;
+}
+
+/** Writes Shows straight into OPFS (before seeding takes for them, which reloads). */
+export async function seedShows(page: Page, names: string[]): Promise<Show[]> {
+	const shows = names.map((name, i) => ({ id: `show_seed${i + 1}`, name, createdAt: new Date(2026, 10, 1).toISOString() }));
+	await page.evaluate(async (file) => {
+		const root = await navigator.storage.getDirectory();
+		const writable = await (await root.getFileHandle('shows.json', { create: true })).createWritable();
+		await writable.write(JSON.stringify(file));
+		await writable.close();
+	}, { version: 1, shows } satisfies ShowsFile);
+	return shows;
 }

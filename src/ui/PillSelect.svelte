@@ -1,5 +1,5 @@
 <script lang="ts">
-	/** A device picker drawn as a pill: an icon, the chosen name and a chevron over a native select. */
+	/** A picker drawn as a pill: an icon, the chosen name and a chevron over a native select. */
 	let {
 		label,
 		icon,
@@ -9,7 +9,7 @@
 		onchange
 	}: {
 		label: string;
-		icon: 'camera' | 'mic';
+		icon: 'camera' | 'mic' | 'show';
 		options: { value: string; label: string }[];
 		value: string | undefined;
 		disabled?: boolean;
@@ -24,10 +24,12 @@
 		<svg viewBox="0 0 16 16" aria-hidden="true"
 			><rect x="1.5" y="4" width="9" height="8" rx="1.5" /><path d="M10.5 7l4-2.5v7l-4-2.5z" /></svg
 		>
-	{:else}
+	{:else if icon === 'mic'}
 		<svg viewBox="0 0 16 16" aria-hidden="true"
 			><rect x="5.5" y="1.5" width="5" height="8" rx="2.5" /><path d="M3 7.5a5 5 0 0010 0M8 12.5v2" /></svg
 		>
+	{:else}
+		<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 4.5a1 1 0 011-1h3.5l1.5 1.5h6a1 1 0 011 1v6.5a1 1 0 01-1 1h-11a1 1 0 01-1-1z" /></svg>
 	{/if}
 	<span class="name">{current}</span>
 	<svg class="chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 6.5l3.5 3.5 3.5-3.5" /></svg>

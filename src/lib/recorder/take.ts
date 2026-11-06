@@ -26,11 +26,13 @@ export interface TakeOptions {
 	onWritten?: (bytes: number) => void;
 	/** Writing to disk failed; capture has stopped. */
 	onError?: (message: string) => void;
+	/** The Show the take is for; null for none. */
+	showId?: string | null;
 }
 
 type VideoTrackWithStats = MediaStreamTrack & { stats?: { deliveredFrames: number } };
 
-export async function startTake({ stream, preview, onWritten, onError }: TakeOptions): Promise<Take> {
+export async function startTake({ stream, preview, onWritten, onError, showId = null }: TakeOptions): Promise<Take> {
 	const mimeType = chooseMimeType((type) => MediaRecorder.isTypeSupported(type));
 	const videoTrack = stream.getVideoTracks()[0] as VideoTrackWithStats | undefined;
 	const audioTrack = stream.getAudioTracks()[0];
@@ -46,6 +48,7 @@ export async function startTake({ stream, preview, onWritten, onError }: TakeOpt
 	let session = newSession({
 		now: new Date(),
 		title: nextTakeTitle((await listSessions()).map((s) => s.title)),
+		showId,
 		video: videoTrack ? videoSettings(videoTrack, codecs.video, recorder) : null,
 		audio: audioSettings(audioTrack, codecs.audio, recorder)
 	});
