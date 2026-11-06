@@ -1,12 +1,13 @@
 <script lang="ts">
 	import { onDestroy, untrack } from 'svelte';
+	import { playAlertSound } from '../lib/browser/alert-sound';
 	import type { SupportedBrowser } from '../lib/browser/support';
 	import { audioBitsPerSecond, resolutionNotice, videoBitsPerSecond } from '../lib/media/capture';
 	import { deviceProblem, frameRateWarning, sampleRateWarning, type DeviceProblem } from '../lib/recorder/device-checks';
 	import { findDevice, loadDevicePrefs, micKey, saveDevicePrefs } from '../lib/recorder/device-prefs';
 	import { listDevices, openCamera, openDevices, openMic, watchFrameRate, type DeviceLists } from '../lib/recorder/devices';
 	import { meterLevel, type LevelReading } from '../lib/recorder/level-meter';
-	import { startTake, type Take } from '../lib/recorder/take';
+	import { startTake, type Pause, type Take } from '../lib/recorder/take';
 	import { isOutOfRoom, measureStorage } from '../lib/storage/budget';
 	import type { Persistence } from '../lib/storage/persistence';
 	import type { Session } from '../lib/storage/session-file';
@@ -86,7 +87,9 @@
 		});
 	}
 
-	let phase = $state<'idle' | 'countdown' | 'starting' | 'capturing' | 'stopping'>('idle');
+	let phase = $state<'idle' | 'countdown' | 'starting' | 'capturing' | 'paused' | 'stopping'>('idle');
+	// Why the take is Paused, and how far into it; kept through the countdown to resume.
+	let paused = $state<{ message: string } | null>(null);
 	let countdown = $state(3);
 	let reading = $state<LevelReading | null>(null);
 	let devicesState = $state<'off' | 'opening' | 'on' | 'failed'>('off');
@@ -116,13 +119,19 @@
 	let stopMetering = () => {};
 	let countdownTimer: ReturnType<typeof setInterval> | undefined;
 	let capturedFor = 0;
+	// Capture time before the current Segment, and when it started.
+	let capturedBefore = 0;
+	let segmentStarted = 0;
 	// Bumped whenever the devices close, so an open still in flight knows it is stale.
 	let generation = 0;
 
 	const cleanUpAudio = $derived(cleanUpFor(micId));
 	const busy = $derived(phase === 'capturing' || phase === 'stopping');
+	// In a take: capturing, or paused (including the countdown to resume).
+	const inTake = $derived(busy || paused !== null);
+	const choosingDevices = $derived(phase === 'idle' || phase === 'paused');
 	const tooLittleRoom = $derived(phase === 'idle' && timeLeft !== null && timeLeft < minimumSecondsToStart);
-	const spaceWarning = $derived(busy && timeLeft !== null ? warningDue(timeLeft) : null);
+	const spaceWarning = $derived(inTake && timeLeft !== null ? warningDue(timeLeft) : null);
 	const warnings = $derived(
 		[fps === null ? null : frameRateWarning(fps), sampleRateWarning(micSampleRate)].filter((w) => w !== null)
 	);
@@ -292,10 +301,10 @@
 
 	/** 3-2-1, so the user can check their level (automatic gain is off) before anything is recorded. */
 	function startCountdown() {
-		if (phase !== 'idle' || devicesState !== 'on' || tooLittleRoom) return;
+		if ((phase !== 'idle' && phase !== 'paused') || devicesState !== 'on' || tooLittleRoom) return;
 		error = null;
 		stoppedForSpace = null;
-		onRecordPressed();
+		if (!paused) onRecordPressed();
 		countdown = 3;
 		phase = 'countdown';
 		countdownTimer = setInterval(() => {
@@ -308,7 +317,7 @@
 	function cancelCountdown() {
 		if (phase !== 'countdown') return;
 		clearInterval(countdownTimer);
-		phase = 'idle';
+		phase = paused ? 'paused' : 'idle';
 	}
 
 	function onkeydown(event: KeyboardEvent) {
@@ -323,6 +332,7 @@
 
 	async function record() {
 		if (!stream) return;
+		if (take && paused) return resume(take, stream);
 		phase = 'starting';
 		try {
 			take = await startTake({
@@ -330,6 +340,7 @@
 				preview,
 				showId: nextShowId,
 				onWritten: (bytes) => (writtenBytes = bytes),
+				onPaused,
 				onError: (message) => {
 					if (isOutOfRoom(message)) stoppedForSpace = 'write';
 					else error = `Recording stopped: couldn't save to this computer (${message}).`;
@@ -341,10 +352,9 @@
 			phase = 'idle';
 			return;
 		}
-		const started = performance.now();
-		elapsedMs = 0;
+		elapsedMs = capturedBefore = 0;
 		writtenBytes = 0;
-		ticker = setInterval(() => (elapsedMs = capturedFor = performance.now() - started), 250);
+		startTicker();
 		const { video, audio } = take.session.recordings[0]!;
 		bitsPerSecond = (video?.bitrate ?? 0) + (audio.bitrate ?? audioBitsPerSecond);
 		phase = 'capturing';
@@ -352,13 +362,59 @@
 		onStarted(take.session);
 	}
 
+	function startTicker() {
+		segmentStarted = performance.now();
+		const tick = () => (elapsedMs = capturedFor = capturedBefore + performance.now() - segmentStarted);
+		tick();
+		ticker = setInterval(tick, 250);
+	}
+
+	function droppedDevices(ended: Pause['ended']): string {
+		if (ended.includes('camera') && ended.includes('mic')) return 'Camera and microphone';
+		return ended.includes('camera') ? 'Camera' : ended.includes('mic') ? 'Microphone' : 'A device';
+	}
+
+	/** A Segment closed because a device dropped out or the computer slept: say so loudly, and get devices to resume with. */
+	function onPaused(pause: Pause) {
+		if (phase !== 'capturing') return;
+		clearInterval(ticker);
+		capturedBefore = elapsedMs;
+		const at = formatDuration(elapsedMs * 1000);
+		paused = {
+			message:
+				pause.reason === 'sleep'
+					? `Recording paused at ${at} while your computer slept.`
+					: `${droppedDevices(pause.ended)} disconnected at ${at}. Recording paused.`
+		};
+		phase = 'paused';
+		playAlertSound();
+		// The dropped track is dead; open the devices afresh (the saved ones, or whatever is there now).
+		closePreview();
+		void openPreview();
+	}
+
+	async function resume(current: Take, currentStream: MediaStream) {
+		phase = 'starting';
+		try {
+			await current.resume(currentStream, preview);
+		} catch (e) {
+			error = `Couldn't resume recording: ${e instanceof Error ? e.message : String(e)}`;
+			phase = 'paused';
+			return;
+		}
+		paused = null;
+		startTicker();
+		phase = 'capturing';
+	}
+
 	async function stop() {
-		if (phase !== 'capturing' || !take) return;
+		if ((phase !== 'capturing' && phase !== 'paused') || !take) return;
 		phase = 'stopping';
 		clearInterval(ticker);
 		const session = await take.stop();
 		take = null;
-		capturedFor = 0;
+		paused = null;
+		capturedFor = capturedBefore = 0;
 		notice = null;
 		phase = 'idle';
 		onStopped(session);
@@ -386,6 +442,8 @@
 		{/if}
 		{#if busy}
 			<span class="rec"><span class="dot"></span>REC</span>
+		{:else if paused}
+			<span class="rec">PAUSED</span>
 		{/if}
 		{#if phase === 'countdown'}
 			<div class="countdown" data-testid="countdown">
@@ -406,7 +464,7 @@
 				icon="show"
 				options={[{ value: '', label: 'No show' }, ...shows.map((s) => ({ value: s.id, label: s.name })), { value: newShowOption, label: 'New show…' }]}
 				value={nextShowId ?? ''}
-				disabled={phase !== 'idle'}
+				disabled={phase !== 'idle' || inTake}
 				onchange={chooseShow}
 			/>
 		{/key}
@@ -415,7 +473,7 @@
 			icon="camera"
 			options={deviceOptions(lists.cameras, 'Camera')}
 			value={cameraId}
-			disabled={devicesState !== 'on' || phase !== 'idle'}
+			disabled={devicesState !== 'on' || !choosingDevices}
 			onchange={chooseCamera}
 		/>
 		<PillSelect
@@ -423,12 +481,12 @@
 			icon="mic"
 			options={deviceOptions(lists.mics, 'Microphone')}
 			value={micId}
-			disabled={devicesState !== 'on' || phase !== 'idle'}
+			disabled={devicesState !== 'on' || !choosingDevices}
 			onchange={chooseMic}
 		/>
 		<PillToggle
 			pressed={cleanUpAudio}
-			disabled={devicesState !== 'on' || phase !== 'idle'}
+			disabled={devicesState !== 'on' || !choosingDevices}
 			title="Echo cancellation, noise suppression and automatic gain, as in video calls. Best left off with a good mic in a quiet room."
 			onchange={setCleanUpAudio}
 		>
@@ -438,6 +496,13 @@
 
 	{#if devicesState === 'on'}
 		<LevelMeter {reading} warn={phase === 'countdown'} />
+	{/if}
+
+	{#if paused}
+		<div class="paused-alert" role="alert" data-testid="paused-alert">
+			<p class="paused-title">{paused.message}</p>
+			<p>Choose a camera and microphone, then Resume to carry on in the same take, or Stop to finish it.</p>
+		</div>
 	{/if}
 
 	<div class="controls">
@@ -451,7 +516,18 @@
 			</p>
 		{:else if phase === 'countdown'}
 			<button class="big" onclick={cancelCountdown}>Cancel</button>
-			<p class="hint">Recording starts in {countdown}… Press Esc to cancel</p>
+			<p class="hint">Recording {paused ? 'resumes' : 'starts'} in {countdown}… Press Esc to cancel</p>
+		{:else if paused}
+			<div class="paused-actions">
+				<button class="big" onclick={startCountdown} disabled={phase !== 'paused' || devicesState !== 'on'}>
+					<span class="dot"></span>Resume
+				</button>
+				<button class="big" onclick={stop} disabled={phase !== 'paused'}><span class="square"></span>Stop</button>
+			</div>
+			<p class="elapsed figures" data-testid="elapsed">
+				<span class="time">{formatDuration(elapsedMs * 1000)}</span>
+				<span class="saved">Paused · {(writtenBytes / 1e6).toFixed(0)} MB saved</span>
+			</p>
 		{:else}
 			<button class="big" onclick={startCountdown} disabled={phase === 'starting' || devicesState !== 'on' || tooLittleRoom}>
 				<span class="dot"></span>Record
@@ -460,7 +536,7 @@
 		{/if}
 	</div>
 
-	{#if stoppedForSpace && !busy}
+	{#if stoppedForSpace && !inTake}
 		<p class="error" role="alert" data-testid="storage-stopped">
 			Recording stopped: this computer ran out of room for recordings. The take is kept{stoppedForSpace === 'write'
 				? ', up to the last few seconds. If it can’t be finished, free up space and try again from Takes.'
@@ -498,7 +574,7 @@
 
 	<ShowNameDialog bind:this={showNameDialog} {shows} />
 
-	{#if lastTake && !busy}
+	{#if lastTake && !inTake}
 		<section class="last" aria-label="Last take">
 			<div class="last-head">
 				<h2>Last take</h2>
@@ -682,6 +758,24 @@
 	.saved {
 		color: var(--muted);
 		font-size: var(--text-small);
+	}
+	.paused-alert {
+		width: 100%;
+		display: grid;
+		gap: 4px;
+		padding: 12px 16px;
+		border: 1px solid var(--problem-fg);
+		border-radius: var(--radius-panel);
+		background: var(--problem-bg);
+		color: var(--problem-fg);
+	}
+	.paused-title {
+		font-weight: 600;
+		font-size: 16px;
+	}
+	.paused-actions {
+		display: flex;
+		gap: 10px;
 	}
 	.notice {
 		padding: 8px 12px;

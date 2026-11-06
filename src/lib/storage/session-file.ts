@@ -197,3 +197,27 @@ export function recordingDurationUs(recording: Recording): number | null {
 	if (!last || last.durationUs === null) return null;
 	return last.startUs + last.durationUs;
 }
+
+/** A new Segment for a Recording resuming after a pause, starting `startUs` into the Session. */
+export function nextSegment(sessionId: string, recording: Recording, startUs: number): Segment {
+	const index = Math.max(0, ...recording.segments.map((s) => s.index)) + 1;
+	const paths = segmentPaths(sessionId, recording.id, index);
+	return { index, path: null, rawPath: paths.raw, manifestPath: paths.manifest, startUs, durationUs: null, downloaded: false, frames: null };
+}
+
+export interface CaptureGap {
+	startUs: number;
+	durationUs: number;
+}
+
+/** The Capture gaps between a Recording's Segments, once the Segments before them have durations. */
+export function captureGaps(recording: Recording): CaptureGap[] {
+	const gaps: CaptureGap[] = [];
+	for (const [i, segment] of recording.segments.entries()) {
+		const before = recording.segments[i - 1];
+		if (!before || before.durationUs === null) continue;
+		const startUs = before.startUs + before.durationUs;
+		if (segment.startUs > startUs) gaps.push({ startUs, durationUs: segment.startUs - startUs });
+	}
+	return gaps;
+}

@@ -56,6 +56,25 @@ for (const size of widths) {
 			await shot(page, testInfo, 'record-4-last-take');
 		});
 
+		test('A take paused', async ({ page }, testInfo) => {
+			test.setTimeout(90_000);
+			await page.goto('/');
+			await page.getByRole('button', { name: 'Record' }).click();
+			await expect(page.getByTestId('elapsed')).toBeVisible({ timeout: 10_000 });
+			await page.waitForTimeout(2000);
+			// Pauses it the way waking from sleep does: the wall clock jumps ahead.
+			await page.evaluate(() => {
+				const now = Date.now.bind(Date);
+				Date.now = () => now() + 60_000;
+			});
+			await expect(page.getByTestId('paused-alert')).toBeVisible({ timeout: 5000 });
+			await expect(page.getByRole('button', { name: 'Resume' })).toBeEnabled();
+			await shot(page, testInfo, 'record-6-paused');
+			await page.getByRole('button', { name: 'Resume' }).click();
+			await expect(page.getByTestId('countdown')).toHaveText('2');
+			await shot(page, testInfo, 'record-7-resuming');
+		});
+
 		test('Record screen when the camera and mic are blocked', async ({ page }, testInfo) => {
 			await page.addInitScript(() => {
 				navigator.mediaDevices.getUserMedia = () => Promise.reject(new DOMException('Permission denied', 'NotAllowedError'));
