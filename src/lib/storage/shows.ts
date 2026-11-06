@@ -46,6 +46,11 @@ export function renameShow(showId: string, name: string): Promise<void> {
 	});
 }
 
+/** Records the Show's folder in the Backup folder, chosen once and kept through renames. */
+export function setShowFolder(showId: string, folder: string): Promise<void> {
+	return changeShows((shows) => ({ shows: shows.map((s) => (s.id === showId ? { ...s, folder } : s)), result: undefined }));
+}
+
 /** Deletes the Show; its takes are kept, in no Show. */
 export async function deleteShow(showId: string): Promise<void> {
 	await changeShows((shows) => ({ shows: shows.filter((s) => s.id !== showId), result: undefined }));

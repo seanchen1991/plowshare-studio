@@ -97,7 +97,7 @@ test('renames a take; Esc keeps the old name', async ({ page }) => {
 	await page.reload();
 	await openTakes(page);
 	const downloading = page.waitForEvent('download');
-	await takesList(page).getByRole('button', { name: 'Download' }).click();
+	await take.getByRole('button', { name: 'Download' }).click();
 	expect((await downloading).suggestedFilename()).toBe(`${date} Episode 7 – intro.mp4`);
 });
 
@@ -158,7 +158,7 @@ test('downloading a large take keeps memory flat', async ({ playwright, browserN
 		const sampler = setInterval(() => (peak = Math.max(peak, browserMemoryMB(rootPid))), 100);
 
 		const downloading = page.waitForEvent('download');
-		await takesList(page).getByRole('button', { name: 'Download' }).click();
+		await takesList(page).getByTestId('session').getByRole('button', { name: 'Download' }).click();
 		const download = await downloading;
 		expect(statSync(await download.path()).size).toBe(megabytes * 1e6);
 		clearInterval(sampler);

@@ -2,12 +2,32 @@
 	import { onMount } from 'svelte';
 	import { detectBrowserSupport } from '../lib/browser/support';
 	import { finalizeRecording, recoverRecording } from '../lib/media/finalize';
+	import { saveFile } from '../lib/browser/download';
+	import { autoDownloadName, backupFileName } from '../lib/storage/backup-names';
+	import {
+		autoDownload,
+		backupOfferDismissed,
+		canUseFolder,
+		chooseBackupFolder,
+		copyTake,
+		dismissBackupOffer,
+		folderAccess,
+		forgetBackupFolder,
+		loadBackupFolder,
+		needsCopy,
+		setAutoDownload,
+		showFolder,
+		type BackupStatus,
+		type FolderAccess
+	} from '../lib/storage/backup';
 	import { storageRefused } from '../lib/storage/budget';
+	import { markDownloaded } from '../lib/storage/library';
+	import { readFile } from '../lib/storage/opfs';
 	import { askToPersist, persistence as currentPersistence, type Persistence } from '../lib/storage/persistence';
 	import { formatTimeLeft } from '../lib/storage/time-left';
 	import { recordingDurationUs, sessionState, shouldRecoverAutomatically, type Session } from '../lib/storage/session-file';
 	import { checkSessionsOnLaunch, listSessions } from '../lib/storage/sessions';
-	import type { Show } from '../lib/storage/show-file';
+	import { showOf, type Show } from '../lib/storage/show-file';
 	import { listShows } from '../lib/storage/shows';
 	import RecordScreen from './RecordScreen.svelte';
 	import SegmentedControl from './SegmentedControl.svelte';
@@ -40,6 +60,31 @@
 	// The browser won't let this site store files: a Firefox private window, or site data blocked.
 	let refused = $state(false);
 
+	// Backups: the Backup folder in Chrome and Edge, automatic downloads in Firefox.
+	const usesFolder = canUseFolder();
+	let backupRoot = $state<FileSystemDirectoryHandle | null>(null);
+	let backupAccess = $state<FolderAccess>('prompt');
+	let copyingTitle = $state<string | null>(null);
+	let downloadsOn = $state(autoDownload());
+	let offerDismissed = $state(backupOfferDismissed());
+	// No copying while a take is captured, so it doesn't compete for the disk.
+	let capturing = false;
+	const backup = $derived<BackupStatus>(
+		usesFolder
+			? {
+					kind: 'folder',
+					name: backupRoot?.name ?? null,
+					access: backupAccess,
+					waiting: sessions.filter(needsCopy).length,
+					copying: copyingTitle
+				}
+			: { kind: 'downloads', on: downloadsOn }
+	);
+	// Offered once there's something to back up (a Show or a take), until chosen or declined.
+	const offerBackup = $derived(
+		!offerDismissed && (shows.length > 0 || sessions.length > 0) && (usesFolder ? !backupRoot : downloadsOn === null)
+	);
+
 	const lastTake = $derived(sessions.find((s) => s.id === lastTakeId) ?? null);
 	// Takes recovered automatically on this visit, until the user has looked at Takes.
 	let recoveredIds = $state<string[]>([]);
@@ -64,6 +109,91 @@
 
 	async function refreshShows() {
 		shows = await listShows();
+		// New Shows get their folders straight away.
+		if (backupRoot && backupAccess === 'granted') {
+			for (const show of shows.filter((s) => !s.folder)) await showFolder(backupRoot, show, shows).catch(() => {});
+			shows = await listShows();
+		}
+	}
+
+	let copying: Promise<void> = Promise.resolve();
+
+	/** Copies every Ready take not yet in the Backup folder, one at a time. */
+	function copyPending() {
+		copying = copying
+			.then(async () => {
+				if (!backupRoot || backupAccess !== 'granted') return;
+				for (const session of (await listSessions()).filter(needsCopy)) {
+					if (capturing) break;
+					copyingTitle = session.title;
+					await copyTake(backupRoot, session.id, shows);
+					await refresh();
+				}
+				// A failure may mean access was taken away.
+				backupAccess = await folderAccess(backupRoot);
+			})
+			.catch(() => {})
+			.finally(() => (copyingTitle = null));
+	}
+
+	async function startBackups() {
+		if (!usesFolder) return;
+		backupRoot = await loadBackupFolder().catch(() => null);
+		if (!backupRoot) return;
+		backupAccess = await folderAccess(backupRoot);
+		await refreshShows();
+		copyPending();
+	}
+
+	async function chooseFolder() {
+		const handle = await chooseBackupFolder();
+		if (!handle) return;
+		backupRoot = handle;
+		backupAccess = await folderAccess(handle);
+		dismissOffer();
+		await refreshShows();
+		copyPending();
+	}
+
+	/** Asks for access when the browser wants it confirmed; must follow a click. */
+	async function allowAccess() {
+		if (!backupRoot) return;
+		backupAccess = await folderAccess(backupRoot, true);
+		await refreshShows();
+		copyPending();
+	}
+
+	async function turnOffFolder() {
+		await forgetBackupFolder();
+		backupRoot = null;
+	}
+
+	function setDownloads(on: boolean) {
+		setAutoDownload(on);
+		downloadsOn = on;
+		dismissOffer();
+	}
+
+	function dismissOffer() {
+		dismissBackupOffer();
+		offerDismissed = true;
+	}
+
+	/** A take just became Ready: copy it, or in Firefox download it if asked to. */
+	async function backUpNew(sessionId: string) {
+		if (usesFolder) return copyPending();
+		if (!downloadsOn) return;
+		const session = sessions.find((s) => s.id === sessionId);
+		if (!session || sessionState(session) !== 'ready') return;
+		const show = showOf(session.showId, shows);
+		for (const recording of session.recordings) {
+			const finished = recording.segments.filter((s) => s.path !== null);
+			for (const segment of finished) {
+				saveFile(await readFile(segment.path!), autoDownloadName(backupFileName(session, finished, segment), show?.name));
+				await markDownloaded(session.id, recording.id, segment.index);
+			}
+		}
+		await refresh();
 	}
 
 	onMount(() => {
@@ -75,6 +205,7 @@
 		if (refused) return;
 		persistence = await currentPersistence();
 		await refreshShows();
+		void startBackups();
 		await launch();
 	}
 
@@ -95,6 +226,7 @@
 		await finalizeRecording(session.id, recordingId, (p) => (progress[session.id] = p));
 		delete progress[session.id];
 		await refresh();
+		await backUpNew(session.id);
 	}
 
 	async function recover(session: Session) {
@@ -104,6 +236,7 @@
 		await recoverRecording(session.id, recordingId, (p) => (progress[session.id] = p));
 		delete progress[session.id];
 		await refresh();
+		await backUpNew(session.id);
 	}
 </script>
 
@@ -147,6 +280,18 @@
 				</p>
 			{/if}
 		{/if}
+		{#if screen === 'record' && offerBackup}
+			<div class="notice offer" role="status" data-testid="backup-offer">
+				{#if usesFolder}
+					<span>Keep a copy of every take in a folder on this computer, with a folder for each show.</span>
+					<button type="button" onclick={chooseFolder}>Choose folder…</button>
+				{:else}
+					<span>Download every take automatically when it's ready? Firefox can't save to a folder, so takes go to Downloads, named with their show.</span>
+					<button type="button" onclick={() => setDownloads(true)}>Turn on</button>
+				{/if}
+				<button type="button" onclick={() => (usesFolder ? dismissOffer() : setDownloads(false))}>Not now</button>
+			</div>
+		{/if}
 		<section aria-label="Record" hidden={screen !== 'record'}>
 			<RecordScreen
 				active={screen === 'record'}
@@ -154,17 +299,22 @@
 				{lastTake}
 				progress={lastTakeId ? progress[lastTakeId] : undefined}
 				onStarted={(session) => {
+					capturing = true;
 					lastTakeId = session.id;
 					void refresh();
 				}}
 				onStopped={async (session) => {
+					capturing = false;
 					await refresh();
 					void finalize(session);
 				}}
 				onShowTakes={() => (screen = 'takes')}
 				onTakeChanged={refresh}
 				onRetry={finalize}
-				onRecordPressed={() => void askToPersist().then((p) => (persistence = p))}
+				onRecordPressed={() => {
+					void askToPersist().then((p) => (persistence = p));
+					if (backupRoot && backupAccess === 'prompt') void allowAccess();
+				}}
 				{persistence}
 				{shows}
 				onShowsChanged={refreshShows}
@@ -182,6 +332,12 @@
 				onChanged={refresh}
 				{shows}
 				onShowsChanged={refreshShows}
+				{backup}
+				onChooseFolder={chooseFolder}
+				onAllowAccess={allowAccess}
+				onTurnOffFolder={turnOffFolder}
+				onSetDownloads={setDownloads}
+				onRetryBackup={() => (backupAccess === 'prompt' ? allowAccess() : copyPending())}
 			/>
 		</section>
 	</main>
@@ -254,6 +410,10 @@
 	.notice.working {
 		background: var(--working-bg);
 		color: var(--working-fg);
+	}
+	.notice.offer {
+		background: var(--soft);
+		color: var(--ink);
 	}
 	.notice.ready {
 		background: var(--ready-bg);

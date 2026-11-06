@@ -37,6 +37,8 @@ export interface Segment {
 	startUs: number;
 	durationUs: number | null;
 	downloaded: boolean;
+	/** Copied to the Backup folder. */
+	copied?: boolean;
 	frames: FrameCounts | null;
 }
 
@@ -61,6 +63,8 @@ export interface Session {
 	createdAt: string;
 	/** The Show this take is for; missing or null means none. */
 	showId?: string | null;
+	/** Why copying to the Backup folder last failed, if it did. */
+	backupError?: string;
 	recordings: Recording[];
 }
 
@@ -177,9 +181,9 @@ export function shouldRecoverAutomatically(recording: Recording): boolean {
 	return recording.state === 'interrupted' && !recording.recovery && !recording.finalizeError;
 }
 
-/** Backed up: every Segment of every Recording is finished and has been downloaded. */
+/** Backed up: every Segment of every Recording is finished and has been downloaded or copied to the Backup folder. */
 export function sessionBackedUp(session: Session): boolean {
-	return session.recordings.every((r) => r.state === 'ready' && r.segments.every((s) => s.path !== null && s.downloaded));
+	return session.recordings.every((r) => r.state === 'ready' && r.segments.every((s) => s.path !== null && (s.downloaded || !!s.copied)));
 }
 
 /** Takes can be deleted unless something is still working on them. */

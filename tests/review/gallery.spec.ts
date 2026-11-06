@@ -172,6 +172,56 @@ for (const size of widths) {
 			await shot(page, testInfo, 'shows-6-delete-show-dialog', { compare: true });
 		});
 
+		test('Backups', async ({ page, browserName }, testInfo) => {
+			test.setTimeout(60_000);
+			const chrome = browserName === 'chromium';
+			await page.addInitScript(() => {
+				const w = window as unknown as Record<string, unknown>;
+				if (!('showDirectoryPicker' in window)) return;
+				w.showDirectoryPicker = async () => (await navigator.storage.getDirectory()).getDirectoryHandle('podcasts', { create: true });
+				// Copies fail with a full disk, for the take that shows it.
+				const create = FileSystemFileHandle.prototype.createWritable;
+				FileSystemFileHandle.prototype.createWritable = function (this: FileSystemFileHandle, ...args) {
+					if (this.name.includes('Episode 7')) return Promise.reject(new DOMException('The disk is full', 'QuotaExceededError'));
+					return create.apply(this, args);
+				};
+			});
+			await page.goto('/');
+			const [tilling] = await seedShows(page, ['Tilling Our Commons']);
+			const segments = [{ extension: 'mp4', bytes: 2_000_000, durationUs: minutes(20) }];
+			await seedTake(page, { title: 'Episode 6', createdAt: at(1), segments, adjust: (s) => void (s.showId = tilling!.id) });
+			await expect(page.getByRole('button', { name: 'Record' })).toBeEnabled();
+			await expect(page.getByTestId('backup-offer')).toBeVisible();
+			await shot(page, testInfo, 'backup-1-offer');
+
+			await page.getByRole('tab', { name: 'Takes' }).click();
+			const line = page.getByRole('region', { name: 'Takes' }).getByTestId('backup');
+			await shot(page, testInfo, 'backup-2-not-on', { compare: true });
+			if (!chrome) {
+				await line.getByRole('button', { name: "Download each take when it's ready" }).click();
+				await shot(page, testInfo, 'backup-3-on', { compare: true });
+				return;
+			}
+			await line.getByRole('button', { name: 'Choose folder…' }).click();
+			await expect(page.getByTestId('session')).toHaveAttribute('data-backed-up', 'true');
+			await expect(line).toHaveText(/Backing up to “podcasts”\./);
+			await shot(page, testInfo, 'backup-3-on', { compare: true });
+
+			await seedTake(page, { title: 'Episode 7', createdAt: at(2), segments, adjust: (s) => void (s.showId = tilling!.id) });
+			await page.getByRole('tab', { name: 'Takes' }).click();
+			await expect(page.getByTestId('backup-failed')).toBeVisible();
+			await expect(line).toContainText('1 take not copied yet');
+			await shot(page, testInfo, 'backup-4-copy-failed', { compare: true });
+
+			await page.addInitScript(() => {
+				(FileSystemHandle.prototype as unknown as Record<string, unknown>).queryPermission = async () => 'prompt';
+			});
+			await page.reload();
+			await page.getByRole('tab', { name: 'Takes' }).click();
+			await expect(line).toContainText('paused until you allow access');
+			await shot(page, testInfo, 'backup-5-waiting-for-access', { compare: true });
+		});
+
 		test('A take Finalizing', async ({ page, context }, testInfo) => {
 			// Hold Finalizing at its start: the finalize worker's script never loads.
 			await context.route('**/finalize.worker*', () => {});

@@ -5,6 +5,8 @@ export interface Show {
 	id: string;
 	name: string;
 	createdAt: string;
+	/** Its folder's name in the Backup folder, once it has one; kept when the Show is renamed. */
+	folder?: string;
 }
 
 export interface ShowsFile {
