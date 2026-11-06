@@ -155,3 +155,20 @@ export async function seedShows(page: Page, names: string[]): Promise<Show[]> {
 	}, { version: 1, shows } satisfies ShowsFile);
 	return shows;
 }
+
+/** Names in an OPFS directory, with file sizes (directories get -1). Empty if it doesn't exist. */
+export function listOpfs(page: Page, path: string): Promise<Record<string, number>> {
+	return page.evaluate(async (path) => {
+		try {
+			let dir = await navigator.storage.getDirectory();
+			for (const name of path.split('/').filter(Boolean)) dir = await dir.getDirectoryHandle(name);
+			const entries: Record<string, number> = {};
+			for await (const [name, handle] of dir as unknown as AsyncIterable<[string, FileSystemHandle]>) {
+				entries[name] = handle.kind === 'file' ? (await (handle as FileSystemFileHandle).getFile()).size : -1;
+			}
+			return entries;
+		} catch {
+			return {};
+		}
+	}, path);
+}

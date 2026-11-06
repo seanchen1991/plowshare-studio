@@ -163,6 +163,12 @@ describe('sessionBackedUp and canDelete', () => {
 		expect(sessionBackedUp(session())).toBe(false);
 	});
 
+	it('counts a Segment copied to the Backup folder as backed up', () => {
+		const take = ready([true, false]);
+		const copied = { ...take, recordings: [{ ...take.recordings[0]!, segments: take.recordings[0]!.segments.map((seg) => ({ ...seg, copied: true })) }] };
+		expect(sessionBackedUp(copied)).toBe(true);
+	});
+
 	it('allows deleting Ready and Interrupted takes, not ones being captured or finalized', () => {
 		expect(canDelete(ready([false]))).toBe(true);
 		const interrupted = { ...session(), recordings: [{ ...session().recordings[0]!, state: 'interrupted' as const }] };

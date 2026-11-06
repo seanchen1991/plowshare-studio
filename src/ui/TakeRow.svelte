@@ -33,7 +33,8 @@
 		onRetry,
 		onChanged,
 		persistence,
-		shows
+		shows,
+		onRetryBackup
 	}: {
 		session: Session;
 		progress?: number;
@@ -42,6 +43,8 @@
 		onChanged: () => void;
 		persistence: Persistence;
 		shows: Show[];
+		/** Tries copying to the Backup folder again after it failed. */
+		onRetryBackup?: () => void;
 	} = $props();
 
 	let playerUrl = $state<string | null>(null);
@@ -218,6 +221,16 @@
 			Recovered {formatDuration(durationUs)} of about {formatDuration(Math.max(recovery.expectedUs, durationUs))}
 		</p>
 	{/if}
+	{#if session.backupError}
+		<p class="problem" role="alert" data-testid="backup-failed">
+			{#if isOutOfRoom(session.backupError)}
+				There wasn't room to copy this take to the Backup folder. It's still saved in the browser: free up space and try again.
+			{:else}
+				Couldn't copy this take to the Backup folder: {session.backupError}. It's still saved in the browser.
+			{/if}
+			{#if onRetryBackup}<button class="retry" type="button" onclick={onRetryBackup}>Try again</button>{/if}
+		</p>
+	{/if}
 	{#if problem}
 		<p class="problem" role="alert">{problem}</p>
 	{/if}
@@ -311,6 +324,16 @@
 		background: var(--problem-bg);
 		color: var(--problem-fg);
 		font-size: var(--text-small);
+	}
+	.retry {
+		padding: 0;
+		border: 0;
+		background: none;
+		color: inherit;
+		font: inherit;
+		font-weight: 600;
+		text-decoration: underline;
+		cursor: pointer;
 	}
 	.recovered {
 		color: var(--muted);

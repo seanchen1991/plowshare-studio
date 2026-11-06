@@ -4,6 +4,8 @@
 	import type { Session } from '../lib/storage/session-file';
 	import { showOf, type Show } from '../lib/storage/show-file';
 	import { createShow, deleteShow, renameShow } from '../lib/storage/shows';
+	import type { BackupStatus } from '../lib/storage/backup';
+	import BackupPanel from './BackupPanel.svelte';
 	import Button from './Button.svelte';
 	import Dialog from './Dialog.svelte';
 	import Menu from './Menu.svelte';
@@ -20,7 +22,13 @@
 		persistence,
 		browser,
 		shows,
-		onShowsChanged
+		onShowsChanged,
+		backup,
+		onChooseFolder,
+		onAllowAccess,
+		onTurnOffFolder,
+		onSetDownloads,
+		onRetryBackup
 	}: {
 		sessions: Session[];
 		progress: Record<string, number>;
@@ -32,6 +40,13 @@
 		shows: Show[];
 		/** A Show was created, renamed or deleted. */
 		onShowsChanged: () => Promise<void>;
+		backup: BackupStatus;
+		onChooseFolder: () => void;
+		onAllowAccess: () => void;
+		onTurnOffFolder: () => void;
+		onSetDownloads: (on: boolean) => void;
+		/** Tries copying to the Backup folder again. */
+		onRetryBackup: () => void;
 	} = $props();
 
 	const allTakes = 'all';
@@ -97,6 +112,7 @@
 			</details>
 		</div>
 	{/if}
+	<BackupPanel {backup} {onChooseFolder} {onAllowAccess} {onTurnOffFolder} {onSetDownloads} />
 	<div class="toolbar">
 		{#key filterKey}
 			<PillSelect
@@ -127,7 +143,7 @@
 	{:else}
 		<ul>
 			{#each listed as session (session.id)}
-				<TakeRow {session} progress={progress[session.id]} onRecover={() => onRecover(session)} onRetry={() => onRetry(session)} {onChanged} {persistence} {shows} />
+				<TakeRow {session} progress={progress[session.id]} onRecover={() => onRecover(session)} onRetry={() => onRetry(session)} {onChanged} {persistence} {shows} {onRetryBackup} />
 			{/each}
 		</ul>
 	{/if}
