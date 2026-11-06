@@ -14,7 +14,8 @@
     "test:e2e": "playwright test",
     "fixture": "node scripts/make-fixture.ts --force",
     "test:hardware": "playwright test -c playwright.hardware.config.ts",
-    "test:review": "playwright test -c playwright.review.config.ts"
+    "test:review": "playwright test -c playwright.review.config.ts",
+    "icons": "node scripts/make-icons.ts"
   },
   "dependencies": {
     "mediabunny": "^1.65.0"

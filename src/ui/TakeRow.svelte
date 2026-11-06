@@ -3,6 +3,7 @@
 	import { saveFile } from '../lib/browser/download';
 	import { isOutOfRoom } from '../lib/storage/budget';
 	import { downloadName, extensionOf } from '../lib/storage/download-name';
+	import { warnNotBackedUp, type Persistence } from '../lib/storage/persistence';
 	import { deleteSession, finishedBytes, markDownloaded, renameSession } from '../lib/storage/library';
 	import { readFile } from '../lib/storage/opfs';
 	import {
@@ -28,8 +29,16 @@
 		progress,
 		onRecover,
 		onRetry,
-		onChanged
-	}: { session: Session; progress?: number; onRecover?: () => void; onRetry?: () => void; onChanged: () => void } = $props();
+		onChanged,
+		persistence
+	}: {
+		session: Session;
+		progress?: number;
+		onRecover?: () => void;
+		onRetry?: () => void;
+		onChanged: () => void;
+		persistence: Persistence;
+	} = $props();
 
 	let playerUrl = $state<string | null>(null);
 	let bytes = $state<number | null>(null);
@@ -132,7 +141,7 @@
 	<span class="duration figures">{durationUs !== null ? formatDuration(durationUs) : ''}</span>
 	<span class="state">
 		<StateChip state={takeState} {progress} />
-		{#if takeState === 'ready' && !backedUp}<Badge tone="working">Not backed up</Badge>{/if}
+		{#if takeState === 'ready' && warnNotBackedUp(persistence, backedUp)}<Badge tone="working">Not backed up</Badge>{/if}
 	</span>
 	<span class="actions">
 		{#if takeState === 'ready'}

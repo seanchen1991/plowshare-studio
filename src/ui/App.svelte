@@ -3,6 +3,7 @@
 	import { detectBrowserSupport } from '../lib/browser/support';
 	import { finalizeRecording, recoverRecording } from '../lib/media/finalize';
 	import { storageRefused } from '../lib/storage/budget';
+	import { askToPersist, persistence as currentPersistence, type Persistence } from '../lib/storage/persistence';
 	import { formatTimeLeft } from '../lib/storage/time-left';
 	import { recordingDurationUs, sessionState, shouldRecoverAutomatically, type Session } from '../lib/storage/session-file';
 	import { checkSessionsOnLaunch, listSessions } from '../lib/storage/sessions';
@@ -32,6 +33,7 @@
 	let progress = $state<Record<string, number>>({});
 	let lastTakeId = $state<string | null>(null);
 	let timeLeft = $state<number | null>(null);
+	let persistence = $state<Persistence>('not-asked');
 	// The browser won't let this site store files: a Firefox private window, or site data blocked.
 	let refused = $state(false);
 
@@ -63,7 +65,9 @@
 
 	async function start() {
 		refused = await storageRefused();
-		if (!refused) await launch();
+		if (refused) return;
+		persistence = await currentPersistence();
+		await launch();
 	}
 
 	async function launch() {
@@ -152,11 +156,21 @@
 				onShowTakes={() => (screen = 'takes')}
 				onTakeChanged={refresh}
 				onRetry={finalize}
+				onRecordPressed={() => void askToPersist().then((p) => (persistence = p))}
+				{persistence}
 				bind:timeLeft
 			/>
 		</section>
 		<section aria-label="Takes" hidden={screen !== 'takes'}>
-			<TakesScreen {sessions} {progress} onRecover={recover} onRetry={finalize} onChanged={refresh} />
+			<TakesScreen
+				{sessions}
+				{progress}
+				{persistence}
+				browser={support.browser}
+				onRecover={recover}
+				onRetry={finalize}
+				onChanged={refresh}
+			/>
 		</section>
 	</main>
 {:else}

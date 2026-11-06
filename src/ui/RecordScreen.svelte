@@ -8,6 +8,7 @@
 	import { meterLevel, type LevelReading } from '../lib/recorder/level-meter';
 	import { startTake, type Take } from '../lib/recorder/take';
 	import { isOutOfRoom, measureStorage } from '../lib/storage/budget';
+	import type { Persistence } from '../lib/storage/persistence';
 	import type { Session } from '../lib/storage/session-file';
 	import { formatTimeLeft, minimumSecondsToStart, recordingTimeLeftSeconds, warningDue } from '../lib/storage/time-left';
 	import Button from './Button.svelte';
@@ -27,6 +28,8 @@
 		onShowTakes,
 		onTakeChanged,
 		onRetry,
+		onRecordPressed,
+		persistence,
 		timeLeft = $bindable(null)
 	}: {
 		/** Whether the Record screen is showing; the camera is only on while it is (or while capturing). */
@@ -42,6 +45,9 @@
 		onTakeChanged: () => void;
 		/** Runs Finalizing again for a take it failed for. */
 		onRetry: (session: Session) => void;
+		/** Record was pressed (the countdown starts): the moment to ask the browser to keep recordings. */
+		onRecordPressed: () => void;
+		persistence: Persistence;
 		/** Recording time left in seconds, at the camera's bitrate; null until known. */
 		timeLeft?: number | null;
 	} = $props();
@@ -257,6 +263,7 @@
 		if (phase !== 'idle' || devicesState !== 'on' || tooLittleRoom) return;
 		error = null;
 		stoppedForSpace = null;
+		onRecordPressed();
 		countdown = 3;
 		phase = 'countdown';
 		countdownTimer = setInterval(() => {
@@ -452,7 +459,7 @@
 				<h2>Last take</h2>
 				<button class="link" onclick={onShowTakes}>All takes</button>
 			</div>
-			<ul><TakeRow session={lastTake} {progress} onChanged={onTakeChanged} onRetry={() => onRetry(lastTake)} /></ul>
+			<ul><TakeRow session={lastTake} {progress} {persistence} onChanged={onTakeChanged} onRetry={() => onRetry(lastTake)} /></ul>
 		</section>
 	{/if}
 </div>
