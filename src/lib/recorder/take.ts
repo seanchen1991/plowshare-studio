@@ -36,10 +36,20 @@ export interface Pause {
 
 export interface Take {
 	readonly session: Session;
-	/** Starts a new Segment of a Paused take, from this stream. */
+	/** Starts a new Segment of a Paused take, from this stream (with a camera only if the take has video). */
 	resume(stream: MediaStream, preview?: HTMLVideoElement): Promise<void>;
 	/** Stops capturing (or ends a pause) and moves the Recording to Finalizing. */
-	stop(): Promise<Session>;
+	stop(): Promise<StoppedTake>;
+}
+
+export interface StoppedTake {
+	session: Session;
+	/**
+	 * Lets go of the Recording's lock and the warning before leaving. They stay
+	 * held after stop, so a take waiting its turn to finalize isn't taken for a
+	 * crashed one; Finalizing calls this once it has finished.
+	 */
+	release: () => void;
 }
 
 export interface TakeOptions {
@@ -70,8 +80,8 @@ function recorderFor(stream: MediaStream, mimeType: string): MediaRecorder {
 }
 
 export async function startTake({ stream, preview, onWritten, onError, onPaused, showId = null }: TakeOptions): Promise<Take> {
-	const mimeType = chooseMimeType((type) => MediaRecorder.isTypeSupported(type));
 	const videoTrack = stream.getVideoTracks()[0];
+	const mimeType = chooseMimeType((type) => MediaRecorder.isTypeSupported(type), !!videoTrack);
 	const audioTrack = stream.getAudioTracks()[0];
 	const recorder = recorderFor(stream, mimeType);
 	const codecs = codecsFromMimeType(recorder.mimeType || mimeType);
@@ -84,7 +94,7 @@ export async function startTake({ stream, preview, onWritten, onError, onPaused,
 		audio: audioSettings(audioTrack, codecs.audio, recorder)
 	});
 	const recording = session.recordings[0]!;
-	// Held until stop, through any pause, so a launch in another tab doesn't take this Recording for a crashed one.
+	// Held through any pause and on until Finalizing ends, so a launch in another tab doesn't take this Recording for a crashed one.
 	const release = await holdRecording(session.id, recording.id);
 	const releaseWakeLock = holdWakeLock();
 	const stopWarning = warnBeforeLeaving();
@@ -142,6 +152,19 @@ export async function startTake({ stream, preview, onWritten, onError, onPaused,
 		})();
 	}
 
+	let released = false;
+	const stopped: StoppedTake = {
+		get session() {
+			return session;
+		},
+		release() {
+			if (released) return;
+			released = true;
+			release();
+			stopWarning();
+		}
+	};
+
 	return {
 		get session() {
 			return session;
@@ -158,15 +181,13 @@ export async function startTake({ stream, preview, onWritten, onError, onPaused,
 		},
 		async stop() {
 			await pausing;
-			if (state === 'stopped') return session;
+			if (state === 'stopped') return stopped;
 			const wasCapturing = state === 'capturing';
 			state = 'stopped';
 			if (wasCapturing) await closeSegment('finalizing');
 			session = await changeSession(session.id, (s) => updateRecording(s, recording.id, (r) => ({ ...r, state: 'finalizing' })));
-			release();
 			releaseWakeLock();
-			stopWarning();
-			return session;
+			return stopped;
 		}
 	};
 }

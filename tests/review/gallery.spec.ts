@@ -75,6 +75,21 @@ for (const size of widths) {
 			await shot(page, testInfo, 'record-7-resuming');
 		});
 
+		test('The camera off, for an audio-only take', async ({ page }, testInfo) => {
+			test.setTimeout(90_000);
+			await page.goto('/');
+			await page.getByRole('combobox', { name: 'Camera' }).selectOption({ label: 'Camera off (audio only)' });
+			await expect(page.getByTestId('camera-off')).toBeVisible();
+			await shot(page, testInfo, 'record-8-camera-off');
+			await page.getByRole('button', { name: 'Record' }).click();
+			await expect(page.getByTestId('elapsed')).toBeVisible({ timeout: 10_000 });
+			await page.waitForTimeout(2000);
+			await shot(page, testInfo, 'record-9-capturing-audio-only');
+			await page.getByRole('button', { name: 'Stop' }).click();
+			await expect(page.getByTestId('session').first()).toHaveAttribute('data-state', 'ready', { timeout: 30_000 });
+			await shot(page, testInfo, 'record-10-audio-only-last-take');
+		});
+
 		test('Record screen when the camera and mic are blocked', async ({ page }, testInfo) => {
 			await page.addInitScript(() => {
 				navigator.mediaDevices.getUserMedia = () => Promise.reject(new DOMException('Permission denied', 'NotAllowedError'));

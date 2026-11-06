@@ -19,6 +19,12 @@ describe('captureConstraints', () => {
 		expect(constraints.audio).toMatchObject({ deviceId: { ideal: 'mic' } });
 	});
 
+	it('opens no camera when it is off', () => {
+		const constraints = captureConstraints({ cameraId: 'cam', cameraOff: true });
+		expect(constraints.video).toBe(false);
+		expect(constraints.audio).toMatchObject({ echoCancellation: false });
+	});
+
 	it('insists on a device the user has just picked', () => {
 		expect(videoConstraints('cam', true)).toMatchObject({ deviceId: { exact: 'cam' } });
 		expect(audioConstraints('mic', false, true)).toMatchObject({ deviceId: { exact: 'mic' } });

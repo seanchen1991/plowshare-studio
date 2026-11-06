@@ -12,6 +12,8 @@ export interface SavedDevice {
 
 export interface DevicePrefs {
 	camera?: SavedDevice;
+	/** The camera is off: takes record audio only. */
+	cameraOff: boolean;
 	mic?: SavedDevice;
 	/** "Clean up audio" by mic (see `micKey`); missing means off. */
 	cleanUpAudio: Record<string, boolean>;
@@ -41,11 +43,12 @@ export function parseDevicePrefs(text: string | null): DevicePrefs {
 		const value = JSON.parse(text ?? '{}');
 		return {
 			camera: parseDevice(value.camera),
+			cameraOff: value.cameraOff === true,
 			mic: parseDevice(value.mic),
 			cleanUpAudio: value.cleanUpAudio && typeof value.cleanUpAudio === 'object' ? value.cleanUpAudio : {}
 		};
 	} catch {
-		return { cleanUpAudio: {} };
+		return { cameraOff: false, cleanUpAudio: {} };
 	}
 }
 
@@ -53,7 +56,7 @@ export function loadDevicePrefs(): DevicePrefs {
 	try {
 		return parseDevicePrefs(localStorage.getItem(key));
 	} catch {
-		return { cleanUpAudio: {} };
+		return { cameraOff: false, cleanUpAudio: {} };
 	}
 }
 

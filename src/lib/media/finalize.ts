@@ -25,19 +25,30 @@ function runWorker(request: FinalizeRequest, onProgress: (progress: number) => v
 	}).finally(() => worker.terminate());
 }
 
-/** Finalizes every unfinished Segment of a Recording. Progress runs from 0 to 1 across all of them. */
+/**
+ * Finalizes every unfinished Segment of a Recording. Progress runs from 0 to 1
+ * across all of them. `held` releases the Recording's lock and leave warning
+ * when the caller already holds them (a take just stopped); otherwise they're taken here.
+ */
 export async function finalizeRecording(
 	sessionId: string,
 	recordingId: string,
-	onProgress: (progress: number) => void = () => {}
+	onProgress: (progress: number) => void = () => {},
+	held?: () => void
 ): Promise<Session> {
-	const release = await holdRecording(sessionId, recordingId);
-	const stopWarning = warnBeforeLeaving();
+	let release = held;
+	if (!release) {
+		const releaseLock = await holdRecording(sessionId, recordingId);
+		const stopWarning = warnBeforeLeaving();
+		release = () => {
+			releaseLock();
+			stopWarning();
+		};
+	}
 	try {
 		return await finalizeHeld(sessionId, recordingId, onProgress);
 	} finally {
 		release();
-		stopWarning();
 	}
 }
 

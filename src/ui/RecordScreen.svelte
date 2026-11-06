@@ -7,7 +7,7 @@
 	import { findDevice, loadDevicePrefs, micKey, saveDevicePrefs } from '../lib/recorder/device-prefs';
 	import { listDevices, openCamera, openDevices, openMic, watchFrameRate, type DeviceLists } from '../lib/recorder/devices';
 	import { meterLevel, type LevelReading } from '../lib/recorder/level-meter';
-	import { startTake, type Pause, type Take } from '../lib/recorder/take';
+	import { startTake, type Pause, type StoppedTake, type Take } from '../lib/recorder/take';
 	import { isOutOfRoom, measureStorage } from '../lib/storage/budget';
 	import type { Persistence } from '../lib/storage/persistence';
 	import type { Session } from '../lib/storage/session-file';
@@ -45,7 +45,8 @@
 		lastTake: Session | null;
 		progress?: number;
 		onStarted: (session: Session) => void;
-		onStopped: (session: Session) => void;
+		/** The take has stopped and is Finalizing; it still holds its lock, for Finalizing to release. */
+		onStopped: (stopped: StoppedTake) => void;
 		onShowTakes: () => void;
 		/** The last take was renamed, downloaded or deleted. */
 		onTakeChanged: () => void;
@@ -108,6 +109,8 @@
 	let prefs = $state(loadDevicePrefs());
 	let lists = $state<DeviceLists>({ cameras: [], mics: [] });
 	let cameraId = $state<string>();
+	// Whether the open stream has a camera; false when it's off, for an audio-only take.
+	let hasCamera = $state(true);
 	let micId = $state<string>();
 	let fps = $state<number | null>(null);
 	let micSampleRate = $state<number>();
@@ -126,6 +129,9 @@
 	let generation = 0;
 
 	const cleanUpAudio = $derived(cleanUpFor(micId));
+	// Picker values besides the cameras: turning the camera off, and on again before any camera is listed.
+	const cameraOffOption = 'off';
+	const cameraOnOption = 'on';
 	const busy = $derived(phase === 'capturing' || phase === 'stopping');
 	// In a take: capturing, or paused (including the countdown to resume).
 	const inTake = $derived(busy || paused !== null);
@@ -187,6 +193,7 @@
 			const opened = await openDevices({
 				cameraId: prefs.camera?.id,
 				micId: prefs.mic?.id,
+				cameraOff: prefs.cameraOff,
 				cleanUpAudio: prefs.mic ? (prefs.cleanUpAudio[micKey({ deviceId: prefs.mic.id, label: prefs.mic.label })] ?? false) : false
 			});
 			if (mine !== generation) return opened.getTracks().forEach((t) => t.stop());
@@ -198,7 +205,7 @@
 			const savedMic = findDevice(lists.mics, prefs.mic);
 			const actualCamera = stream.getVideoTracks()[0]?.getSettings().deviceId;
 			const actualMic = stream.getAudioTracks()[0]?.getSettings().deviceId;
-			if (savedCamera && savedCamera.deviceId !== actualCamera) await replaceCamera(savedCamera.deviceId);
+			if (!prefs.cameraOff && savedCamera && savedCamera.deviceId !== actualCamera) await replaceCamera(savedCamera.deviceId);
 			if (savedMic && (savedMic.deviceId !== actualMic || cleanUpFor(actualMic) !== cleanUpFor(savedMic.deviceId))) {
 				await replaceMic(savedMic.deviceId);
 			} else if (!savedMic && actualMic && cleanUpFor(actualMic)) {
@@ -234,6 +241,7 @@
 		const video = stream!.getVideoTracks()[0];
 		const audio = stream!.getAudioTracks()[0];
 		cameraId = video?.getSettings().deviceId;
+		hasCamera = !!video;
 		micId = audio?.getSettings().deviceId;
 		micSampleRate = audio?.getSettings().sampleRate;
 		bitsPerSecond = (video ? videoBitsPerSecond(video.getSettings().height ?? 0) : 0) + audioBitsPerSecond;
@@ -241,15 +249,20 @@
 		fps = null;
 		preview!.srcObject = stream;
 		await preview!.play();
-		stopWatching = watchFrameRate(preview!, (rate) => (fps = rate));
+		stopWatching = video ? watchFrameRate(preview!, (rate) => (fps = rate)) : () => {};
 		stopMetering();
 		stopMetering = audio ? meterLevel(audio, (r) => (reading = r)) : () => {};
 	}
 
-	async function replaceCamera(id: string) {
+	async function replaceCamera(id: string | undefined) {
 		stream!.getVideoTracks().forEach((t) => t.stop());
-		const track = await openCamera(id);
+		const track = await openCamera(id, prefs.camera?.id);
 		stream = new MediaStream([track, ...stream!.getAudioTracks()]);
+	}
+
+	function turnCameraOff() {
+		stream!.getVideoTracks().forEach((t) => t.stop());
+		stream = new MediaStream(stream!.getAudioTracks());
 	}
 
 	/** "Clean up audio" for a mic, remembered by its name. */
@@ -278,10 +291,20 @@
 		}
 	}
 
-	function chooseCamera(id: string) {
-		prefs.camera = saved(lists.cameras, id);
+	function chooseCamera(value: string) {
+		if (value === cameraOffOption) {
+			prefs.cameraOff = true;
+			saveDevicePrefs(prefs);
+			return void changeDevice(async () => turnCameraOff());
+		}
+		prefs.cameraOff = false;
+		if (value !== cameraOnOption) prefs.camera = saved(lists.cameras, value);
 		saveDevicePrefs(prefs);
-		void changeDevice(() => replaceCamera(id));
+		void changeDevice(async () => {
+			await replaceCamera(value === cameraOnOption ? undefined : value);
+			// Allowing the camera may be what gives the cameras their names.
+			lists = await listDevices();
+		});
 	}
 
 	function chooseMic(id: string) {
@@ -411,26 +434,37 @@
 		if ((phase !== 'capturing' && phase !== 'paused') || !take) return;
 		phase = 'stopping';
 		clearInterval(ticker);
-		const session = await take.stop();
+		const stopped = await take.stop();
 		take = null;
 		paused = null;
 		capturedFor = capturedBefore = 0;
 		notice = null;
 		phase = 'idle';
-		onStopped(session);
+		onStopped(stopped);
 	}
 
 	const deviceOptions = (devices: MediaDeviceInfo[], fallback: string) =>
 		devices.map((d, i) => ({ value: d.deviceId, label: d.label || `${fallback} ${i + 1}` }));
+
+	/** The Camera picker's choices: each camera, and Off. A take keeps the camera on or off as it started. */
+	const cameraOptions = $derived.by(() => {
+		const cameras = deviceOptions(lists.cameras, 'Camera');
+		if (devicesState !== 'on') return cameras;
+		if (paused) return hasCamera ? cameras : [{ value: cameraOffOption, label: 'Camera off' }];
+		const on = cameras.length > 0 || hasCamera ? cameras : [{ value: cameraOnOption, label: 'Turn camera on' }];
+		return [...on, { value: cameraOffOption, label: 'Camera off (audio only)' }];
+	});
 </script>
 
 <svelte:window {onkeydown} />
 
 <div class="record">
-	<div class="stage" class:live={devicesState === 'on'}>
+	<div class="stage" class:live={devicesState === 'on' && hasCamera}>
 		<video bind:this={preview} muted playsinline data-testid="preview"></video>
 		{#if devicesState === 'opening' || devicesState === 'off'}
-			<p class="placeholder">Starting camera…</p>
+			<p class="placeholder">{prefs.cameraOff ? 'Starting microphone…' : 'Starting camera…'}</p>
+		{:else if devicesState === 'on' && !hasCamera}
+			<p class="placeholder" data-testid="camera-off">Camera off · recording audio only</p>
 		{:else if devicesState === 'failed' && problem}
 			<div class="problem" role="alert" data-testid="device-problem">
 				<p class="problem-title">{problem.title}</p>
@@ -471,9 +505,9 @@
 		<PillSelect
 			label="Camera"
 			icon="camera"
-			options={deviceOptions(lists.cameras, 'Camera')}
-			value={cameraId}
-			disabled={devicesState !== 'on' || !choosingDevices}
+			options={cameraOptions}
+			value={hasCamera ? cameraId : cameraOffOption}
+			disabled={devicesState !== 'on' || !choosingDevices || (paused !== null && !hasCamera)}
 			onchange={chooseCamera}
 		/>
 		<PillSelect
@@ -562,7 +596,6 @@
 			Room for {formatTimeLeft(timeLeft)} more. The take stops by itself, and is kept, when this computer runs out of room.
 		</p>
 	{/if}
-
 
 	{#if notice}
 		<p class="notice" data-testid="resolution-notice">{notice}</p>
