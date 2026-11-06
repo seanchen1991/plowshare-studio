@@ -13,14 +13,16 @@ describe('frameRateWarning', () => {
 });
 
 describe('sampleRateWarning', () => {
-	it('stays quiet at 48 kHz and when the browser does not say', () => {
+	it('stays quiet at 48 and 44.1 kHz, and when the browser does not say', () => {
 		expect(sampleRateWarning(48000)).toBeNull();
+		expect(sampleRateWarning(44100)).toBeNull();
 		expect(sampleRateWarning(undefined)).toBeNull();
 	});
 
-	it('warns below 48 kHz', () => {
+	it('warns at call quality, below 44.1 kHz', () => {
 		expect(sampleRateWarning(16000)).toMatch(/^Your microphone is running at 16 kHz/);
-		expect(sampleRateWarning(44100)).toMatch(/44\.1 kHz/);
+		expect(sampleRateWarning(8000)).toMatch(/8 kHz/);
+		expect(sampleRateWarning(32000)).toMatch(/32 kHz/);
 	});
 });
 

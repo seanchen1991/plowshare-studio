@@ -14,9 +14,13 @@ export function frameRateWarning(fps: number): string | null {
 	);
 }
 
-/** Warns when the mic opens below 48 kHz, like a Bluetooth headset in call mode. Unknown rates (Firefox) pass. */
+/**
+ * Warns when the mic opens at call quality (below 44.1 kHz), like a Bluetooth
+ * headset in call mode at 8 or 16 kHz. 44.1 kHz, common for USB mics and audio
+ * interfaces, is fine: it is resampled to 48 kHz. Unknown rates (Firefox) pass.
+ */
 export function sampleRateWarning(sampleRate: number | undefined): string | null {
-	if (!sampleRate || sampleRate >= 48000) return null;
+	if (!sampleRate || sampleRate >= 44100) return null;
 	return (
 		`Your microphone is running at ${sampleRate / 1000} kHz and will sound like a phone call. ` +
 		'Bluetooth headsets do this while their mic is on; a wired or USB mic will sound better.'
