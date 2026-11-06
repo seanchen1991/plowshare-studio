@@ -6,6 +6,7 @@
 import { mkdirSync } from 'node:fs';
 import { expect, test, type Page, type TestInfo } from '@playwright/test';
 import { seedTake } from '../helpers/app.ts';
+import { safetyMarginBytes } from '../../src/lib/storage/time-left.ts';
 
 const widths = [
 	{ name: 'laptop', width: 1280, height: 800 },
@@ -23,12 +24,17 @@ for (const size of widths) {
 		test.use({ viewport: { width: size.width, height: size.height } });
 
 		/** Saves a full-page screenshot to the gallery, and compares it with the saved one when `compare`. */
-		async function shot(page: Page, testInfo: TestInfo, name: string, { compare = false } = {}) {
+		async function shot(page: Page, testInfo: TestInfo, name: string, { compare = false, timeLeft = true } = {}) {
+			// Shown once the camera is open and storage measured; settled first, so screenshots match.
+			if (timeLeft) await expect(page.getByTestId('time-left')).toHaveText(/Room for/);
 			const dir = `test-results-review/gallery/${testInfo.project.name}/${size.name}`;
 			mkdirSync(dir, { recursive: true });
 			await page.screenshot({ path: `${dir}/${name}.png`, fullPage: true, animations: 'disabled' });
 			if (compare && process.platform === 'darwin') {
+				// Recording time left depends on this machine's free space and the camera, so it is left out.
+				const hide = await page.addStyleTag({ content: '[data-testid=time-left] { visibility: hidden !important; }' });
 				await expect(page).toHaveScreenshot(`${size.name}-${name}.png`, { fullPage: true, animations: 'disabled' });
+				await hide.evaluate((style) => (style as HTMLStyleElement).remove());
 			}
 		}
 
@@ -56,7 +62,7 @@ for (const size of widths) {
 			});
 			await page.goto('/');
 			await expect(page.getByTestId('device-problem')).toBeVisible();
-			await shot(page, testInfo, 'record-5-blocked', { compare: true });
+			await shot(page, testInfo, 'record-5-blocked', { compare: true, timeLeft: false });
 		});
 
 		// Seeded files are small (the test browser's storage quota is), so sizes show in MB.
@@ -132,6 +138,66 @@ for (const size of widths) {
 			await shot(page, testInfo, 'record-6-finalizing');
 			await page.getByRole('tab', { name: 'Takes' }).click();
 			await shot(page, testInfo, 'takes-7-finalizing');
+		});
+
+		test('Running out of room', async ({ page }, testInfo) => {
+			test.setTimeout(60_000);
+			// estimate() reports `window.testQuota` once set, as in tests/e2e/storage.spec.ts.
+			await page.addInitScript(() => {
+				const estimate = navigator.storage.estimate.bind(navigator.storage);
+				navigator.storage.estimate = async () => {
+					const quota = (window as unknown as { testQuota?: number }).testQuota;
+					return quota === undefined ? estimate() : { ...(await estimate()), quota };
+				};
+			});
+			const leave = async (minutes: number) => {
+				const { usage = 0 } = await page.evaluate(() => navigator.storage.estimate());
+				const quota = usage * 2 + safetyMarginBytes + minutes * 60 * (3_660_000 / 8) * 2;
+				await page.evaluate((q) => ((window as unknown as { testQuota: number }).testQuota = q), quota);
+			};
+			await page.goto('/');
+			await expect(page.getByRole('button', { name: 'Record' })).toBeEnabled();
+			await shot(page, testInfo, 'storage-1-time-left');
+
+			await page.getByRole('button', { name: 'Record' }).click();
+			await expect(page.getByTestId('elapsed')).toBeVisible({ timeout: 10_000 });
+			await leave(4);
+			await expect(page.getByTestId('storage-warning')).toBeVisible({ timeout: 10_000 });
+			await shot(page, testInfo, 'storage-2-warning');
+
+			const { usage = 0 } = await page.evaluate(() => navigator.storage.estimate());
+			await page.evaluate((q) => ((window as unknown as { testQuota: number }).testQuota = q), usage + safetyMarginBytes);
+			await expect(page.getByTestId('session').first()).toHaveAttribute('data-state', 'ready', { timeout: 30_000 });
+			await expect(page.getByTestId('storage-problem')).toBeVisible({ timeout: 10_000 });
+			await shot(page, testInfo, 'storage-3-stopped-and-refused');
+		});
+
+		// Seen after a reload: the take is then Interrupted, and Recover finishes it.
+		test('A take that ran out of room while finishing', async ({ page }, testInfo) => {
+			await page.goto('/');
+			await seedTake(page, {
+				title: 'Episode 4',
+				createdAt,
+				segments: [{ extension: 'webm', bytes: 1000, durationUs: minutes(12) }],
+				adjust: (session) => {
+					const recording = session.recordings[0]!;
+					recording.state = 'finalizing';
+					recording.finalizeError = 'The operation failed because it would cause the application to exceed its storage quota.';
+					Object.assign(recording.segments[0]!, { path: null, rawPath: `sessions/${session.id}/rec_01/seg-01.raw`, manifestPath: `sessions/${session.id}/rec_01/seg-01.manifest.jsonl` });
+				}
+			});
+			await page.getByRole('tab', { name: 'Takes' }).click();
+			await expect(page.getByTestId('interrupted')).toContainText("There wasn't room on this computer to finish this take.");
+			await shot(page, testInfo, 'takes-8-no-room-to-finish', { compare: true });
+		});
+
+		test('A private window', async ({ page }, testInfo) => {
+			await page.addInitScript(() => {
+				navigator.storage.getDirectory = () => Promise.reject(new DOMException('Security error when calling GetDirectory', 'SecurityError'));
+			});
+			await page.goto('/');
+			await expect(page.getByTestId('storage-refused')).toBeVisible();
+			await shot(page, testInfo, 'storage-4-private-window', { compare: true, timeLeft: false });
 		});
 
 		test('A take that couldn’t be recovered automatically', async ({ page }, testInfo) => {

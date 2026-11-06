@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onDestroy, tick } from 'svelte';
 	import { saveFile } from '../lib/browser/download';
+	import { isOutOfRoom } from '../lib/storage/budget';
 	import { downloadName, extensionOf } from '../lib/storage/download-name';
 	import { deleteSession, finishedBytes, markDownloaded, renameSession } from '../lib/storage/library';
 	import { readFile } from '../lib/storage/opfs';
@@ -18,13 +19,17 @@
 	import StateChip from './StateChip.svelte';
 	import { formatBytes, formatDuration } from './format';
 
-	/** One Session in a list of takes; `progress` is Finalizing's, when running. `onChanged` runs after a rename, download or delete. */
+	/**
+	 * One Session in a list of takes; `progress` is Finalizing's, when running. `onChanged` runs after a rename,
+	 * download or delete; `onRetry` runs Finalizing again after it failed.
+	 */
 	let {
 		session,
 		progress,
 		onRecover,
+		onRetry,
 		onChanged
-	}: { session: Session; progress?: number; onRecover?: () => void; onChanged: () => void } = $props();
+	}: { session: Session; progress?: number; onRecover?: () => void; onRetry?: () => void; onChanged: () => void } = $props();
 
 	let playerUrl = $state<string | null>(null);
 	let bytes = $state<number | null>(null);
@@ -145,6 +150,8 @@
 			{/if}
 		{:else if takeState === 'interrupted' && onRecover}
 			<Button variant="primary" onclick={onRecover}>Recover</Button>
+		{:else if failed && progress === undefined && onRetry}
+			<Button variant="primary" onclick={onRetry}>Try again</Button>
 		{/if}
 		<Menu
 			label="More actions"
@@ -156,7 +163,9 @@
 	</span>
 	{#if takeState === 'interrupted'}
 		<p class="problem" role="alert" data-testid="interrupted">
-			{#if failed}
+			{#if failed && isOutOfRoom(failed)}
+				There wasn't room on this computer to finish this take. The raw recording is kept: free up space, then press Recover.
+			{:else if failed}
 				Couldn't recover this take: {failed}.
 			{:else if recovery}
 				The browser closed while this take was being recovered. Recover tries again.
@@ -164,8 +173,15 @@
 				The browser closed during this take.
 			{/if}
 		</p>
+	{:else if failed && isOutOfRoom(failed)}
+		<p class="problem" role="alert" data-testid="finalize-failed">
+			There wasn't room on this computer to finish this take. The raw recording is kept: free up space, then press Try again.
+		</p>
 	{:else if failed}
-		<p class="problem" role="alert">Couldn't finish this take: {failed}. The raw recording is kept.</p>
+		<p class="problem" role="alert" data-testid="finalize-failed">
+			Couldn't finish this take: {failed}. The raw recording is kept: if this computer is short of space, free some up, then
+			press Try again.
+		</p>
 	{:else if takeState === 'ready' && recovery && durationUs !== null}
 		<p class="recovered" data-testid="recovered">
 			Recovered {formatDuration(durationUs)} of about {formatDuration(Math.max(recovery.expectedUs, durationUs))}

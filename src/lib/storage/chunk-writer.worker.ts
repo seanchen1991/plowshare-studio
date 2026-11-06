@@ -47,7 +47,8 @@ async function handle(request: ChunkWriterRequest) {
 			const bytes = new Uint8Array(await request.data.arrayBuffer());
 			if (bytes.length === 0) return;
 			const written = raw!.write(bytes, { at: rawOffset });
-			if (written !== bytes.length) throw new Error(`Wrote ${written} of ${bytes.length} bytes`);
+			// Browsers write short, rather than fail, when the quota runs out.
+			if (written !== bytes.length) throw new Error(`Only ${written} of ${bytes.length} bytes fit: not enough space`);
 			raw!.flush();
 			append({ kind: 'chunk', offset: rawOffset, bytes: bytes.length, timestampUs: request.timestampUs });
 			rawOffset += bytes.length;

@@ -1,13 +1,15 @@
 <script lang="ts">
 	import { onDestroy, untrack } from 'svelte';
 	import type { SupportedBrowser } from '../lib/browser/support';
-	import { resolutionNotice } from '../lib/media/capture';
+	import { audioBitsPerSecond, resolutionNotice, videoBitsPerSecond } from '../lib/media/capture';
 	import { deviceProblem, frameRateWarning, sampleRateWarning, type DeviceProblem } from '../lib/recorder/device-checks';
 	import { findDevice, loadDevicePrefs, micKey, saveDevicePrefs } from '../lib/recorder/device-prefs';
 	import { listDevices, openCamera, openDevices, openMic, watchFrameRate, type DeviceLists } from '../lib/recorder/devices';
 	import { meterLevel, type LevelReading } from '../lib/recorder/level-meter';
 	import { startTake, type Take } from '../lib/recorder/take';
+	import { isOutOfRoom, measureStorage } from '../lib/storage/budget';
 	import type { Session } from '../lib/storage/session-file';
+	import { formatTimeLeft, minimumSecondsToStart, recordingTimeLeftSeconds, warningDue } from '../lib/storage/time-left';
 	import Button from './Button.svelte';
 	import LevelMeter from './LevelMeter.svelte';
 	import PillSelect from './PillSelect.svelte';
@@ -23,7 +25,9 @@
 		onStarted,
 		onStopped,
 		onShowTakes,
-		onTakeChanged
+		onTakeChanged,
+		onRetry,
+		timeLeft = $bindable(null)
 	}: {
 		/** Whether the Record screen is showing; the camera is only on while it is (or while capturing). */
 		active: boolean;
@@ -36,6 +40,10 @@
 		onShowTakes: () => void;
 		/** The last take was renamed, downloaded or deleted. */
 		onTakeChanged: () => void;
+		/** Runs Finalizing again for a take it failed for. */
+		onRetry: (session: Session) => void;
+		/** Recording time left in seconds, at the camera's bitrate; null until known. */
+		timeLeft?: number | null;
 	} = $props();
 
 	const isMac = /Macintosh|Mac OS X/.test(navigator.userAgent);
@@ -50,6 +58,11 @@
 	let writtenBytes = $state(0);
 	let notice = $state<string | null>(null);
 	let preview = $state<HTMLVideoElement>();
+	// Bits per second of the camera and mic as last opened, for Recording time left. Until a camera
+	// opens, 1080p: the most the app records, so the room shown is never more than there is.
+	let bitsPerSecond = $state(videoBitsPerSecond(1080) + audioBitsPerSecond);
+	// Why the last take stopped by itself: Recording time left ran out, or the browser refused a write for room.
+	let stoppedForSpace = $state<'time-left' | 'write' | null>(null);
 
 	let prefs = $state(loadDevicePrefs());
 	let lists = $state<DeviceLists>({ cameras: [], mics: [] });
@@ -64,11 +77,14 @@
 	let stopWatching = () => {};
 	let stopMetering = () => {};
 	let countdownTimer: ReturnType<typeof setInterval> | undefined;
+	let capturedFor = 0;
 	// Bumped whenever the devices close, so an open still in flight knows it is stale.
 	let generation = 0;
 
 	const cleanUpAudio = $derived(cleanUpFor(micId));
 	const busy = $derived(phase === 'capturing' || phase === 'stopping');
+	const tooLittleRoom = $derived(phase === 'idle' && timeLeft !== null && timeLeft < minimumSecondsToStart);
+	const spaceWarning = $derived(busy && timeLeft !== null ? warningDue(timeLeft) : null);
 	const warnings = $derived(
 		[fps === null ? null : frameRateWarning(fps), sampleRateWarning(micSampleRate)].filter((w) => w !== null)
 	);
@@ -87,7 +103,29 @@
 	}
 	navigator.mediaDevices?.addEventListener('devicechange', onDeviceChange);
 
+	// Recording time left, every few seconds and whenever a take starts, stops or changes.
+	const measuring = setInterval(() => void measureTimeLeft(), 5000);
+	$effect(() => {
+		void [lastTake, progress === undefined, bitsPerSecond];
+		untrack(() => void measureTimeLeft());
+	});
+
+	async function measureTimeLeft() {
+		const current = take;
+		let rate = bitsPerSecond;
+		// A recorder can run over the bitrate asked for; after a while, trust what it writes.
+		if (current && capturedFor > 30_000) rate = Math.max(rate, (writtenBytes * 8) / (capturedFor / 1000));
+		const measure = await measureStorage(current?.session.id, current ? writtenBytes : 0);
+		timeLeft = recordingTimeLeftSeconds(measure, rate);
+		// Stop while the finished copy still fits, so the take finalizes like any other.
+		if (current && current === take && phase === 'capturing' && timeLeft <= 0) {
+			stoppedForSpace = 'time-left';
+			void stop();
+		}
+	}
+
 	onDestroy(() => {
+		clearInterval(measuring);
 		clearInterval(ticker);
 		clearInterval(countdownTimer);
 		navigator.mediaDevices?.removeEventListener('devicechange', onDeviceChange);
@@ -151,6 +189,7 @@
 		cameraId = video?.getSettings().deviceId;
 		micId = audio?.getSettings().deviceId;
 		micSampleRate = audio?.getSettings().sampleRate;
+		bitsPerSecond = (video ? videoBitsPerSecond(video.getSettings().height ?? 0) : 0) + audioBitsPerSecond;
 		stopWatching();
 		fps = null;
 		preview!.srcObject = stream;
@@ -215,8 +254,9 @@
 
 	/** 3-2-1, so the user can check their level (automatic gain is off) before anything is recorded. */
 	function startCountdown() {
-		if (phase !== 'idle' || devicesState !== 'on') return;
+		if (phase !== 'idle' || devicesState !== 'on' || tooLittleRoom) return;
 		error = null;
+		stoppedForSpace = null;
 		countdown = 3;
 		phase = 'countdown';
 		countdownTimer = setInterval(() => {
@@ -251,7 +291,8 @@
 				preview,
 				onWritten: (bytes) => (writtenBytes = bytes),
 				onError: (message) => {
-					error = `Recording stopped: couldn't save to this computer (${message}).`;
+					if (isOutOfRoom(message)) stoppedForSpace = 'write';
+					else error = `Recording stopped: couldn't save to this computer (${message}).`;
 					void stop();
 				}
 			});
@@ -263,7 +304,9 @@
 		const started = performance.now();
 		elapsedMs = 0;
 		writtenBytes = 0;
-		ticker = setInterval(() => (elapsedMs = performance.now() - started), 250);
+		ticker = setInterval(() => (elapsedMs = capturedFor = performance.now() - started), 250);
+		const { video, audio } = take.session.recordings[0]!;
+		bitsPerSecond = (video?.bitrate ?? 0) + (audio.bitrate ?? audioBitsPerSecond);
 		phase = 'capturing';
 		notice = resolutionNotice(take.session.recordings[0]!.video);
 		onStarted(take.session);
@@ -275,6 +318,7 @@
 		clearInterval(ticker);
 		const session = await take.stop();
 		take = null;
+		capturedFor = 0;
 		notice = null;
 		phase = 'idle';
 		onStopped(session);
@@ -359,12 +403,40 @@
 			<button class="big" onclick={cancelCountdown}>Cancel</button>
 			<p class="hint">Recording starts in {countdown}… Press Esc to cancel</p>
 		{:else}
-			<button class="big" onclick={startCountdown} disabled={phase === 'starting' || devicesState !== 'on'}>
+			<button class="big" onclick={startCountdown} disabled={phase === 'starting' || devicesState !== 'on' || tooLittleRoom}>
 				<span class="dot"></span>Record
 			</button>
 			<p class="hint">Press Space to start · 3-2-1 countdown</p>
 		{/if}
 	</div>
+
+	{#if stoppedForSpace && !busy}
+		<p class="error" role="alert" data-testid="storage-stopped">
+			Recording stopped: this computer ran out of room for recordings. The take is kept{stoppedForSpace === 'write'
+				? ', up to the last few seconds. If it can’t be finished, free up space and try again from Takes.'
+				: '.'}
+		</p>
+	{/if}
+
+	{#if tooLittleRoom && timeLeft !== null}
+		<div class="error" role="alert" data-testid="storage-problem">
+			<p>
+				Not enough room to record: {formatTimeLeft(timeLeft)} left, and a take needs at least
+				{minimumSecondsToStart / 60} minutes.
+			</p>
+			<p>
+				Download the takes you want to keep and delete them in <button class="link" onclick={onShowTakes}>Takes</button>, or free
+				up space on this computer.
+			</p>
+		</div>
+	{/if}
+
+	{#if spaceWarning !== null && timeLeft !== null}
+		<p class="notice urgent" role="alert" data-testid="storage-warning" data-threshold={spaceWarning / 60}>
+			Room for {formatTimeLeft(timeLeft)} more. The take stops by itself, and is kept, when this computer runs out of room.
+		</p>
+	{/if}
+
 
 	{#if notice}
 		<p class="notice" data-testid="resolution-notice">{notice}</p>
@@ -380,7 +452,7 @@
 				<h2>Last take</h2>
 				<button class="link" onclick={onShowTakes}>All takes</button>
 			</div>
-			<ul><TakeRow session={lastTake} {progress} onChanged={onTakeChanged} /></ul>
+			<ul><TakeRow session={lastTake} {progress} onChanged={onTakeChanged} onRetry={() => onRetry(lastTake)} /></ul>
 		</section>
 	{/if}
 </div>
@@ -566,7 +638,13 @@
 		color: var(--working-fg);
 		font-size: var(--text-small);
 	}
+	.notice.urgent {
+		border: 1px solid var(--working-edge);
+		font-weight: 600;
+	}
 	.error {
+		display: grid;
+		gap: 4px;
 		padding: 8px 12px;
 		border-radius: var(--radius-panel);
 		background: var(--problem-bg);

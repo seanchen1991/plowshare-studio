@@ -6,11 +6,13 @@
 		sessions,
 		progress,
 		onRecover,
+		onRetry,
 		onChanged
 	}: {
 		sessions: Session[];
 		progress: Record<string, number>;
 		onRecover: (session: Session) => void;
+		onRetry: (session: Session) => void;
 		onChanged: () => void;
 	} = $props();
 </script>
@@ -22,7 +24,7 @@
 	{:else}
 		<ul>
 			{#each sessions as session (session.id)}
-				<TakeRow {session} progress={progress[session.id]} onRecover={() => onRecover(session)} {onChanged} />
+				<TakeRow {session} progress={progress[session.id]} onRecover={() => onRecover(session)} onRetry={() => onRetry(session)} {onChanged} />
 			{/each}
 		</ul>
 	{/if}

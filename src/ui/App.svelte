@@ -2,6 +2,8 @@
 	import { onMount } from 'svelte';
 	import { detectBrowserSupport } from '../lib/browser/support';
 	import { finalizeRecording, recoverRecording } from '../lib/media/finalize';
+	import { storageRefused } from '../lib/storage/budget';
+	import { formatTimeLeft } from '../lib/storage/time-left';
 	import { recordingDurationUs, sessionState, shouldRecoverAutomatically, type Session } from '../lib/storage/session-file';
 	import { checkSessionsOnLaunch, listSessions } from '../lib/storage/sessions';
 	import RecordScreen from './RecordScreen.svelte';
@@ -29,6 +31,9 @@
 	let sessions = $state<Session[]>([]);
 	let progress = $state<Record<string, number>>({});
 	let lastTakeId = $state<string | null>(null);
+	let timeLeft = $state<number | null>(null);
+	// The browser won't let this site store files: a Firefox private window, or site data blocked.
+	let refused = $state(false);
 
 	const lastTake = $derived(sessions.find((s) => s.id === lastTakeId) ?? null);
 	// Takes recovered automatically on this visit, until the user has looked at Takes.
@@ -53,8 +58,13 @@
 	}
 
 	onMount(() => {
-		if (support.supported) void launch();
+		if (support.supported) void start();
 	});
+
+	async function start() {
+		refused = await storageRefused();
+		if (!refused) await launch();
+	}
 
 	async function launch() {
 		await checkSessionsOnLaunch().finally(refresh);
@@ -85,12 +95,22 @@
 	}
 </script>
 
-{#if support.supported}
+{#if support.supported && refused}
+	<main class="unsupported">
+		<h1>Plowshare Studio</h1>
+		<p data-testid="storage-refused" role="alert">
+			Plowshare Studio can't record in a private window. Every take is saved to this computer as it records, and this browser
+			doesn't let websites save files here. Open a normal window to record.
+		</p>
+		<p class="aside">If this isn't a private window, check that this site is allowed to store data in the browser's settings.</p>
+	</main>
+{:else if support.supported}
 	<header class="top">
 		<h1>Plowshare Studio</h1>
 		<nav><SegmentedControl options={screens} bind:value={screen} label="Screens" /></nav>
-		<!-- Recording time left goes here (issue 11). -->
-		<div class="room"></div>
+		<div class="room figures" data-testid="time-left">
+			{#if timeLeft !== null}Room for {formatTimeLeft(timeLeft)}{/if}
+		</div>
 	</header>
 	<!-- Both screens stay mounted, so a take keeps recording while Takes is open. -->
 	<main data-testid="home">
@@ -131,10 +151,12 @@
 				}}
 				onShowTakes={() => (screen = 'takes')}
 				onTakeChanged={refresh}
+				onRetry={finalize}
+				bind:timeLeft
 			/>
 		</section>
 		<section aria-label="Takes" hidden={screen !== 'takes'}>
-			<TakesScreen {sessions} {progress} onRecover={recover} onChanged={refresh} />
+			<TakesScreen {sessions} {progress} onRecover={recover} onRetry={finalize} onChanged={refresh} />
 		</section>
 	</main>
 {:else}
@@ -168,6 +190,22 @@
 		justify-self: end;
 		color: var(--muted);
 		font-size: var(--text-small);
+	}
+	/* Phones: Recording time left gets a row of its own under the name and tabs. */
+	@media (max-width: 640px) {
+		.top {
+			grid-template-columns: 1fr auto;
+			row-gap: 2px;
+			height: auto;
+			padding: 8px 16px;
+		}
+		.room {
+			grid-column: 1 / -1;
+			justify-self: start;
+		}
+		.room:empty {
+			display: none;
+		}
 	}
 	main {
 		padding: 32px 24px 64px;
@@ -212,5 +250,9 @@
 	}
 	.unsupported h1 {
 		font-size: 22px;
+	}
+	.aside {
+		color: var(--muted);
+		font-size: var(--text-small);
 	}
 </style>
