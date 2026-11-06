@@ -25,8 +25,18 @@
 		panel.style.right = `${document.documentElement.clientWidth - rect.right}px`;
 	}
 
-	function focusFirst(event: ToggleEvent) {
-		if (event.newState === 'open') panel.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
+	// Above the button instead when it would run off the bottom of the window (measured once shown).
+	function fit() {
+		const rect = trigger.getBoundingClientRect();
+		const viewport = document.documentElement.clientHeight;
+		const height = panel.getBoundingClientRect().height;
+		if (rect.bottom + 4 + height > viewport && rect.top > viewport - rect.bottom) panel.style.top = `${rect.top - 4 - height}px`;
+	}
+
+	function opened(event: ToggleEvent) {
+		if (event.newState !== 'open') return;
+		fit();
+		panel.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
 	}
 
 	function select(item: MenuItem) {
@@ -38,7 +48,7 @@
 <button bind:this={trigger} type="button" class="trigger" popovertarget={id} aria-label={label} title={label}>
 	{@render children()}
 </button>
-<div bind:this={panel} {id} popover="auto" class="panel" onbeforetoggle={place} ontoggle={focusFirst}>
+<div bind:this={panel} {id} popover="auto" class="panel" onbeforetoggle={place} ontoggle={opened}>
 	{#each items as item (item.label)}
 		<button type="button" class:danger={item.danger} disabled={item.disabled} onclick={() => select(item)}>{item.label}</button>
 	{/each}

@@ -4,7 +4,7 @@
 	import { isOutOfRoom } from '../lib/storage/budget';
 	import { downloadName, extensionOf } from '../lib/storage/download-name';
 	import { warnNotBackedUp, type Persistence } from '../lib/storage/persistence';
-	import { deleteSession, finishedBytes, markDownloaded, renameSession } from '../lib/storage/library';
+	import { deleteSession, finishedBytes, markDownloaded, moveSession, renameSession } from '../lib/storage/library';
 	import { readFile } from '../lib/storage/opfs';
 	import {
 		canDelete,
@@ -14,15 +14,17 @@
 		type Segment,
 		type Session
 	} from '../lib/storage/session-file';
+	import { showOf, type Show } from '../lib/storage/show-file';
 	import Badge from './Badge.svelte';
 	import Button from './Button.svelte';
+	import Dialog from './Dialog.svelte';
 	import Menu from './Menu.svelte';
 	import StateChip from './StateChip.svelte';
 	import { formatBytes, formatDuration } from './format';
 
 	/**
 	 * One Session in a list of takes; `progress` is Finalizing's, when running. `onChanged` runs after a rename,
-	 * download or delete; `onRetry` runs Finalizing again after it failed.
+	 * download, move or delete; `onRetry` runs Finalizing again after it failed.
 	 */
 	let {
 		session,
@@ -30,7 +32,8 @@
 		onRecover,
 		onRetry,
 		onChanged,
-		persistence
+		persistence,
+		shows
 	}: {
 		session: Session;
 		progress?: number;
@@ -38,6 +41,7 @@
 		onRetry?: () => void;
 		onChanged: () => void;
 		persistence: Persistence;
+		shows: Show[];
 	} = $props();
 
 	let playerUrl = $state<string | null>(null);
@@ -46,6 +50,8 @@
 	let titleInput = $state<HTMLInputElement>();
 	let confirmDelete = $state<HTMLDialogElement>();
 	let problem = $state<string | null>(null);
+	let moveDialog: Dialog;
+	let moveSelect = $state<HTMLSelectElement>();
 
 	const takeState = $derived(sessionState(session));
 	const recording = $derived(session.recordings[0]);
@@ -54,8 +60,10 @@
 	const failed = $derived(session.recordings.find((r) => r.finalizeError)?.finalizeError);
 	const recovery = $derived(recording?.recovery);
 	const backedUp = $derived(sessionBackedUp(session));
+	const show = $derived(showOf(session.showId, shows));
 	const details = $derived(
 		[
+			show?.name,
 			new Date(session.createdAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }),
 			bytes !== null ? formatBytes(bytes) : null,
 			recording?.video ? `${recording.video.width} × ${recording.video.height}` : recording ? 'Audio only' : null
@@ -104,6 +112,19 @@
 		}
 	}
 
+	function startMove() {
+		if (moveSelect) moveSelect.value = show?.id ?? '';
+		moveDialog.open();
+	}
+
+	async function move(event: SubmitEvent) {
+		if ((event.submitter as HTMLButtonElement | null)?.value !== 'move' || !moveSelect) return;
+		const showId = moveSelect.value || null;
+		if (showId === (show?.id ?? null)) return;
+		await moveSession(session.id, showId);
+		onChanged();
+	}
+
 	async function remove() {
 		try {
 			await deleteSession(session.id);
@@ -136,7 +157,7 @@
 		{:else}
 			<span class="title" data-testid="take-title">{session.title}</span>
 		{/if}
-		<span class="details figures">{details}</span>
+		<span class="details figures" data-testid="take-details">{details}</span>
 	</div>
 	<span class="duration figures">{durationUs !== null ? formatDuration(durationUs) : ''}</span>
 	<span class="state">
@@ -166,6 +187,7 @@
 			label="More actions"
 			items={[
 				{ label: 'Rename', onselect: startRename },
+				{ label: 'Move to show…', onselect: startMove },
 				{ label: 'Delete…', onselect: () => confirmDelete?.showModal(), danger: true, disabled: !canDelete(session) }
 			]}>⋯</Menu
 		>
@@ -203,6 +225,17 @@
 		<!-- svelte-ignore a11y_media_has_caption -->
 		<video src={playerUrl} controls data-testid="player"></video>
 	{/if}
+
+	<Dialog bind:this={moveDialog} title="Move “{session.title}” to" onsubmit={move}>
+		<select bind:this={moveSelect} class="move-select" aria-label="Show">
+			<option value="">No show</option>
+			{#each shows as s (s.id)}<option value={s.id}>{s.name}</option>{/each}
+		</select>
+		{#snippet actions()}
+			<Button type="submit" value="cancel">Cancel</Button>
+			<Button type="submit" value="move" variant="primary">Move</Button>
+		{/snippet}
+	</Dialog>
 
 	<dialog bind:this={confirmDelete} aria-labelledby="delete-{session.id}">
 		<form method="dialog">
@@ -318,6 +351,15 @@
 		justify-content: flex-end;
 		gap: 8px;
 		margin-top: 20px;
+	}
+	.move-select {
+		width: 100%;
+		height: 32px;
+		padding: 0 8px;
+		border: 1px solid var(--line);
+		border-radius: var(--radius-button);
+		background: var(--canvas);
+		font: inherit;
 	}
 	.delete {
 		height: 30px;

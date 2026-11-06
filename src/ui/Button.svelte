@@ -6,7 +6,7 @@
 		variant = 'default',
 		children,
 		...rest
-	}: HTMLButtonAttributes & { variant?: 'default' | 'primary'; children: Snippet } = $props();
+	}: HTMLButtonAttributes & { variant?: 'default' | 'primary' | 'danger'; children: Snippet } = $props();
 </script>
 
 <button class={variant} type="button" {...rest}>{@render children()}</button>
@@ -36,6 +36,15 @@
 	}
 	.primary:hover:not(:disabled) {
 		background: #35323c;
+	}
+	.danger {
+		border-color: var(--record);
+		background: var(--record);
+		color: #fff;
+	}
+	.danger:hover:not(:disabled) {
+		background: var(--record);
+		filter: brightness(0.92);
 	}
 	button:disabled {
 		opacity: 0.5;

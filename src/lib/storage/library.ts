@@ -1,5 +1,5 @@
-// Changes the user makes to takes in the library: rename, delete, and noting
-// which Segments have been downloaded.
+// Changes the user makes to takes in the library: rename, delete, moving to
+// another Show, and noting which Segments have been downloaded.
 
 import { readFile, removeDirectory } from './opfs.ts';
 import { canDelete, sessionsDir, updateRecording, updateSegment, type Session } from './session-file.ts';
@@ -14,6 +14,11 @@ export function renameSession(sessionId: string, title: string): Promise<Session
 export async function deleteSession(sessionId: string): Promise<void> {
 	if (!canDelete(await loadSession(sessionId))) throw new Error('This take is still being recorded or finished');
 	await removeDirectory(`${sessionsDir}/${sessionId}`);
+}
+
+/** Moves the take to another Show, or to none. */
+export function moveSession(sessionId: string, showId: string | null): Promise<Session> {
+	return changeSession(sessionId, (s) => ({ ...s, showId }));
 }
 
 export function markDownloaded(sessionId: string, recordingId: string, index: number): Promise<Session> {

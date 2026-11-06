@@ -10,11 +10,14 @@
 	import { isOutOfRoom, measureStorage } from '../lib/storage/budget';
 	import type { Persistence } from '../lib/storage/persistence';
 	import type { Session } from '../lib/storage/session-file';
+	import { showOf, type Show } from '../lib/storage/show-file';
+	import { createShow, nextTakeShowId, setNextTakeShowId } from '../lib/storage/shows';
 	import { formatTimeLeft, minimumSecondsToStart, recordingTimeLeftSeconds, warningDue } from '../lib/storage/time-left';
 	import Button from './Button.svelte';
 	import LevelMeter from './LevelMeter.svelte';
 	import PillSelect from './PillSelect.svelte';
 	import PillToggle from './PillToggle.svelte';
+	import ShowNameDialog from './ShowNameDialog.svelte';
 	import TakeRow from './TakeRow.svelte';
 	import { formatDuration } from './format';
 
@@ -30,6 +33,8 @@
 		onRetry,
 		onRecordPressed,
 		persistence,
+		shows,
+		onShowsChanged,
 		timeLeft = $bindable(null)
 	}: {
 		/** Whether the Record screen is showing; the camera is only on while it is (or while capturing). */
@@ -48,11 +53,38 @@
 		/** Record was pressed (the countdown starts): the moment to ask the browser to keep recordings. */
 		onRecordPressed: () => void;
 		persistence: Persistence;
+		shows: Show[];
+		/** A Show was created here. */
+		onShowsChanged: () => Promise<void>;
 		/** Recording time left in seconds, at the camera's bitrate; null until known. */
 		timeLeft?: number | null;
 	} = $props();
 
 	const isMac = /Macintosh|Mac OS X/.test(navigator.userAgent);
+
+	// The Show the next take is for, remembered between takes and visits; a deleted Show means none.
+	let chosenShowId = $state(nextTakeShowId());
+	const nextShowId = $derived(showOf(chosenShowId, shows)?.id ?? null);
+	const newShowOption = 'new';
+	let showNameDialog: ShowNameDialog;
+	// Remounts the picker, so it goes back to the chosen Show when New show is cancelled.
+	let showPickerKey = $state(0);
+
+	function chooseShow(value: string) {
+		if (value !== newShowOption) {
+			chosenShowId = value || null;
+			setNextTakeShowId(chosenShowId);
+			return;
+		}
+		showNameDialog.open({
+			onsave: async (name) => {
+				const show = await createShow(name);
+				await onShowsChanged();
+				chooseShow(show.id);
+			},
+			oncancel: () => showPickerKey++
+		});
+	}
 
 	let phase = $state<'idle' | 'countdown' | 'starting' | 'capturing' | 'stopping'>('idle');
 	let countdown = $state(3);
@@ -296,6 +328,7 @@
 			take = await startTake({
 				stream,
 				preview,
+				showId: nextShowId,
 				onWritten: (bytes) => (writtenBytes = bytes),
 				onError: (message) => {
 					if (isOutOfRoom(message)) stoppedForSpace = 'write';
@@ -367,6 +400,16 @@
 	</div>
 
 	<div class="devices">
+		{#key showPickerKey}
+			<PillSelect
+				label="Show"
+				icon="show"
+				options={[{ value: '', label: 'No show' }, ...shows.map((s) => ({ value: s.id, label: s.name })), { value: newShowOption, label: 'New show…' }]}
+				value={nextShowId ?? ''}
+				disabled={phase !== 'idle'}
+				onchange={chooseShow}
+			/>
+		{/key}
 		<PillSelect
 			label="Camera"
 			icon="camera"
@@ -453,13 +496,15 @@
 		<p class="error" role="alert">{error}</p>
 	{/if}
 
+	<ShowNameDialog bind:this={showNameDialog} {shows} />
+
 	{#if lastTake && !busy}
 		<section class="last" aria-label="Last take">
 			<div class="last-head">
 				<h2>Last take</h2>
 				<button class="link" onclick={onShowTakes}>All takes</button>
 			</div>
-			<ul><TakeRow session={lastTake} {progress} {persistence} onChanged={onTakeChanged} onRetry={() => onRetry(lastTake)} /></ul>
+			<ul><TakeRow session={lastTake} {progress} {persistence} {shows} onChanged={onTakeChanged} onRetry={() => onRetry(lastTake)} /></ul>
 		</section>
 	{/if}
 </div>

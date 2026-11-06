@@ -7,6 +7,8 @@
 	import { formatTimeLeft } from '../lib/storage/time-left';
 	import { recordingDurationUs, sessionState, shouldRecoverAutomatically, type Session } from '../lib/storage/session-file';
 	import { checkSessionsOnLaunch, listSessions } from '../lib/storage/sessions';
+	import type { Show } from '../lib/storage/show-file';
+	import { listShows } from '../lib/storage/shows';
 	import RecordScreen from './RecordScreen.svelte';
 	import SegmentedControl from './SegmentedControl.svelte';
 	import TakesScreen from './TakesScreen.svelte';
@@ -30,6 +32,7 @@
 
 	let screen = $state<Screen>('record');
 	let sessions = $state<Session[]>([]);
+	let shows = $state<Show[]>([]);
 	let progress = $state<Record<string, number>>({});
 	let lastTakeId = $state<string | null>(null);
 	let timeLeft = $state<number | null>(null);
@@ -59,6 +62,10 @@
 		sessions = await listSessions();
 	}
 
+	async function refreshShows() {
+		shows = await listShows();
+	}
+
 	onMount(() => {
 		if (support.supported) void start();
 	});
@@ -67,6 +74,7 @@
 		refused = await storageRefused();
 		if (refused) return;
 		persistence = await currentPersistence();
+		await refreshShows();
 		await launch();
 	}
 
@@ -158,6 +166,8 @@
 				onRetry={finalize}
 				onRecordPressed={() => void askToPersist().then((p) => (persistence = p))}
 				{persistence}
+				{shows}
+				onShowsChanged={refreshShows}
 				bind:timeLeft
 			/>
 		</section>
@@ -170,6 +180,8 @@
 				onRecover={recover}
 				onRetry={finalize}
 				onChanged={refresh}
+				{shows}
+				onShowsChanged={refreshShows}
 			/>
 		</section>
 	</main>

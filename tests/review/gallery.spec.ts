@@ -5,7 +5,7 @@
 
 import { mkdirSync } from 'node:fs';
 import { expect, test, type Page, type TestInfo } from '@playwright/test';
-import { seedTake } from '../helpers/app.ts';
+import { seedShows, seedTake } from '../helpers/app.ts';
 import { safetyMarginBytes } from '../../src/lib/storage/time-left.ts';
 
 const widths = [
@@ -125,6 +125,51 @@ for (const size of widths) {
 			await page.getByRole('button', { name: 'Delete…' }).click();
 			await expect(page.getByRole('dialog')).toBeVisible();
 			await shot(page, testInfo, 'takes-6-delete-dialog', { compare: true });
+		});
+
+		test('Shows', async ({ page }, testInfo) => {
+			test.setTimeout(60_000);
+			await page.goto('/');
+			const [tilling, field] = await seedShows(page, ['Tilling Our Commons', 'Field Notes from a Long and Winding Road']);
+			await page.evaluate((id) => localStorage.setItem('plowshare.nextTakeShow', id), tilling!.id);
+			const segments = [{ extension: 'mp4', bytes: 2_000_000, durationUs: minutes(20) }];
+			await seedTake(page, { title: 'Episode 12', createdAt: at(1), segments, adjust: (s) => void (s.showId = tilling!.id) });
+			await seedTake(page, { title: 'Episode 13', createdAt: at(2), segments, adjust: (s) => void (s.showId = tilling!.id) });
+			await seedTake(page, { title: 'Walk 4', createdAt: at(3), segments, adjust: (s) => void (s.showId = field!.id) });
+			await seedTake(page, { title: 'Mic check', createdAt: at(4), segments });
+			await expect(page.getByRole('button', { name: 'Record' })).toBeEnabled();
+			await shot(page, testInfo, 'shows-1-record-for-a-show');
+
+			await page.getByRole('tab', { name: 'Takes' }).click();
+			const takes = page.getByRole('region', { name: 'Takes' });
+			const filter = takes.getByRole('combobox', { name: 'Show', exact: true });
+			await expect(takes.getByTestId('session')).toHaveCount(4);
+			await shot(page, testInfo, 'shows-2-all-takes', { compare: true });
+
+			await filter.selectOption({ label: 'Tilling Our Commons' });
+			await expect(takes.getByTestId('session')).toHaveCount(2);
+			await takes.getByRole('button', { name: 'Show actions' }).click();
+			await shot(page, testInfo, 'shows-3-one-show-and-its-menu', { compare: true });
+			await page.keyboard.press('Escape');
+
+			await filter.selectOption({ label: 'New show…' });
+			const dialog = page.getByRole('dialog', { name: 'New show' });
+			await dialog.getByRole('textbox', { name: 'Name' }).fill('tilling our commons');
+			await dialog.getByRole('button', { name: 'Create' }).click();
+			await expect(dialog.getByRole('alert')).toBeVisible();
+			await shot(page, testInfo, 'shows-4-new-show-name-taken', { compare: true });
+			await dialog.getByRole('button', { name: 'Cancel' }).click();
+
+			await takes.getByTestId('session').first().getByRole('button', { name: 'More actions' }).click();
+			await page.getByRole('button', { name: 'Move to show…' }).click();
+			await expect(page.getByRole('dialog', { name: /^Move/ })).toBeVisible();
+			await shot(page, testInfo, 'shows-5-move-dialog', { compare: true });
+			await page.getByRole('dialog', { name: /^Move/ }).getByRole('button', { name: 'Cancel' }).click();
+
+			await takes.getByRole('button', { name: 'Show actions' }).click();
+			await page.getByRole('button', { name: 'Delete show…' }).click();
+			await expect(page.getByRole('dialog', { name: /^Delete “Tilling/ })).toBeVisible();
+			await shot(page, testInfo, 'shows-6-delete-show-dialog', { compare: true });
 		});
 
 		test('A take Finalizing', async ({ page, context }, testInfo) => {

@@ -59,6 +59,8 @@ export interface Session {
 	id: string;
 	title: string;
 	createdAt: string;
+	/** The Show this take is for; missing or null means none. */
+	showId?: string | null;
 	recordings: Recording[];
 }
 
@@ -92,10 +94,11 @@ export function newSession(options: {
 	now: Date;
 	random?: () => number;
 	title?: string;
+	showId?: string | null;
 	video: VideoSettings | null;
 	audio: AudioSettings;
 }): Session {
-	const { now, random = Math.random, title = 'Take 1', video, audio } = options;
+	const { now, random = Math.random, title = 'Take 1', showId = null, video, audio } = options;
 	const id = newId('ses', now, random);
 	const recordingId = 'rec_01';
 	const paths = segmentPaths(id, recordingId, 1);
@@ -104,6 +107,7 @@ export function newSession(options: {
 		id,
 		title,
 		createdAt: now.toISOString(),
+		showId,
 		recordings: [
 			{
 				id: recordingId,
