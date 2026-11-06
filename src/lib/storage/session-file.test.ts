@@ -13,6 +13,8 @@ import {
 	nextTakeTitle,
 	sessionBackedUp,
 	canDelete,
+	captureGaps,
+	nextSegment,
 	type AudioSettings,
 	type Session
 } from './session-file.ts';
@@ -191,5 +193,39 @@ describe('recordingDurationUs', () => {
 			]
 		};
 		expect(recordingDurationUs(recording)).toBe(20_000_000);
+	});
+});
+
+describe('Segments after a pause', () => {
+	it('numbers the next Segment and places it on the Session timeline', () => {
+		const s = session();
+		const segment = nextSegment(s.id, s.recordings[0]!, 75_000_000);
+		expect(segment).toEqual({
+			index: 2,
+			path: null,
+			rawPath: `sessions/${s.id}/rec_01/seg-02.raw`,
+			manifestPath: `sessions/${s.id}/rec_01/seg-02.manifest.jsonl`,
+			startUs: 75_000_000,
+			durationUs: null,
+			downloaded: false,
+			frames: null
+		});
+	});
+
+	it('derives the Capture gaps from Segment start times and durations', () => {
+		const s = session();
+		const first = { ...s.recordings[0]!.segments[0]!, durationUs: 60_000_000 };
+		const second = { ...nextSegment(s.id, s.recordings[0]!, 75_000_000), durationUs: 30_000_000 };
+		const third = { ...nextSegment(s.id, { ...s.recordings[0]!, segments: [first, second] }, 105_000_000) };
+		const recording = { ...s.recordings[0]!, segments: [first, second, third] };
+		expect(third.index).toBe(3);
+		// 15 s unplugged after the first Segment; the third followed straight on from the second.
+		expect(captureGaps(recording)).toEqual([{ startUs: 60_000_000, durationUs: 15_000_000 }]);
+	});
+
+	it('has no gaps until the Segment before has a duration', () => {
+		const s = session();
+		const recording = { ...s.recordings[0]!, segments: [s.recordings[0]!.segments[0]!, nextSegment(s.id, s.recordings[0]!, 75_000_000)] };
+		expect(captureGaps(recording)).toEqual([]);
 	});
 });

@@ -185,3 +185,57 @@ test('switches between every real camera and mic', async ({ page }, testInfo) =>
 	expect(outcomes.filter((o) => o.result === 'neither in use nor explained')).toEqual([]);
 	expect(outcomes.filter((o) => o.result === "in use").length).toBeGreaterThanOrEqual(2);
 });
+
+test('a take pauses when the camera and its mic drop out, and resumes on the real devices', async ({ page, browserName }, testInfo) => {
+	test.skip(browserName !== 'chromium', 'Ends the tracks with a page-made event, which only Chrome delivers');
+	test.setTimeout(120_000);
+	await ready(page);
+	if (micName) {
+		const picker = page.getByRole('combobox', { name: 'Microphone' });
+		const label = (await picker.locator('option').allTextContents()).find((l) => l.includes(micName))!;
+		await picker.selectOption({ label });
+		await expect.poll(async () => (await tracksInUse(page)).find((t) => t.kind === 'audio')?.label.trim(), { timeout: 20_000 }).toBe(label.trim());
+		await expect(page.getByRole('button', { name: 'Record' })).toBeEnabled();
+	}
+	const before = await tracksInUse(page);
+
+	await page.getByRole('button', { name: 'Record' }).click();
+	await expect(page.getByText('REC', { exact: true })).toBeVisible({ timeout: 10_000 });
+	await page.waitForTimeout(5000);
+	// A USB camera with a built-in mic takes both tracks with it when unplugged.
+	await page.getByTestId('preview').evaluate((video: HTMLVideoElement) => {
+		for (const track of (video.srcObject as MediaStream).getTracks()) {
+			track.stop();
+			track.dispatchEvent(new Event('ended'));
+		}
+	});
+	await expect(page.getByTestId('paused-alert')).toContainText('Camera and microphone disconnected');
+	await page.screenshot({ path: testInfo.outputPath('1-paused.png') });
+
+	// The same real devices open again (the saved ones), ready to resume.
+	await expect(page.getByRole('button', { name: 'Resume' })).toBeEnabled({ timeout: 20_000 });
+	const after = await tracksInUse(page);
+	expect(after.map((t) => t.label)).toEqual(before.map((t) => t.label));
+	await page.getByRole('button', { name: 'Resume' }).click();
+	await expect(page.getByText('REC', { exact: true })).toBeVisible({ timeout: 10_000 });
+	await page.waitForTimeout(5000);
+	await page.getByRole('button', { name: 'Stop' }).click();
+	const take = page.getByTestId('session').first();
+	await expect(take).toHaveAttribute('data-state', 'ready', { timeout: 60_000 });
+
+	const session = await page.evaluate(async (id) => {
+		const dir = await (await (await navigator.storage.getDirectory()).getDirectoryHandle('sessions')).getDirectoryHandle(id!);
+		return JSON.parse(await (await (await dir.getFileHandle('session.json')).getFile()).text());
+	}, await take.getAttribute('data-session-id'));
+	const segments = session.recordings[0].segments as { path: string; durationUs: number }[];
+	expect(segments).toHaveLength(2);
+	for (const [i, segment] of segments.entries()) {
+		const file = testInfo.outputPath(`segment-${i + 1}${segment.path.slice(segment.path.lastIndexOf('.'))}`);
+		await saveOpfsFile(page, segment.path, file);
+		expect(probeStreams(file).map((st) => st.codec_type).sort()).toEqual(['audio', 'video']);
+		const samples = decodeAudio(file);
+		const rms = Math.sqrt(samples.reduce((sum, v) => sum + v * v, 0) / samples.length);
+		expect(rms, `segment ${i + 1} sound`).toBeGreaterThan(3e-5);
+		still(file, 2, testInfo.outputPath(`segment-${i + 1}.png`));
+	}
+});
