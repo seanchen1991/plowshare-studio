@@ -11,6 +11,12 @@ describe('chooseMimeType', () => {
 	it("lets the browser choose when it supports none of them", () => {
 		expect(chooseMimeType(() => false)).toBe('');
 	});
+
+	it('records an audio-only take as Opus in WebM, with no video codec', () => {
+		expect(chooseMimeType(() => true, false)).toBe('audio/webm;codecs=opus');
+		expect(codecsFromMimeType(chooseMimeType(() => true, false))).toEqual({ video: null, audio: 'opus' });
+		expect(chooseMimeType(() => false, false)).toBe('');
+	});
 });
 
 describe('codecsFromMimeType', () => {

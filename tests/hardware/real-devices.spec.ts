@@ -157,6 +157,8 @@ test('switches between every real camera and mic', async ({ page }, testInfo) =>
 		const select = page.getByRole('combobox', { name: picker });
 		const options = await select.locator('option').allTextContents();
 		for (const [i, option] of options.entries()) {
+			// Camera off has a test of its own.
+			if (option.startsWith('Camera off')) continue;
 			await select.selectOption({ index: i });
 			// Either the preview now uses that device, or the app says why it can't.
 			let result = 'neither in use nor explained';
@@ -238,4 +240,36 @@ test('a take pauses when the camera and its mic drop out, and resumes on the rea
 		expect(rms, `segment ${i + 1} sound`).toBeGreaterThan(3e-5);
 		still(file, 2, testInfo.outputPath(`segment-${i + 1}.png`));
 	}
+});
+
+test('records an audio-only take from the real mic with the camera off', async ({ page }, testInfo) => {
+	test.setTimeout(90_000);
+	await ready(page);
+	if (micName) {
+		const picker = page.getByRole('combobox', { name: 'Microphone' });
+		const label = (await picker.locator('option').allTextContents()).find((l) => l.includes(micName))!;
+		await picker.selectOption({ label });
+		await expect.poll(async () => (await tracksInUse(page)).find((t) => t.kind === 'audio')?.label.trim(), { timeout: 20_000 }).toBe(label.trim());
+	}
+	const camera = page.getByRole('combobox', { name: 'Camera' });
+	await camera.selectOption({ label: 'Camera off (audio only)' });
+	await expect(page.getByTestId('camera-off')).toBeVisible();
+	// The camera is really released, and the mic stays the chosen one.
+	await expect.poll(async () => (await tracksInUse(page)).map((t) => t.kind)).toEqual(['audio']);
+	await page.screenshot({ path: testInfo.outputPath('camera-off.png') });
+
+	const beeps = playBeeps();
+	const session = await recordTake(page, 6).finally(() => beeps?.kill());
+	const recording = session.recordings[0]!;
+	expect(recording.video).toBeNull();
+	const file = testInfo.outputPath('audio-only.webm');
+	await saveOpfsFile(page, recording.segments[0]!.path!, file);
+	expect(probeStreams(file).map((st) => st.codec_type)).toEqual(['audio']);
+	const samples = decodeAudio(file);
+	const rms = Math.sqrt(samples.reduce((sum, v) => sum + v * v, 0) / samples.length);
+	expect(rms, 'sound').toBeGreaterThan(3e-5);
+
+	// Back on for the other tests: the camera choice is remembered.
+	await camera.selectOption({ index: 0 });
+	await expect(page.getByTestId('camera-off')).toBeHidden({ timeout: 20_000 });
 });

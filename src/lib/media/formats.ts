@@ -3,9 +3,12 @@
 /** Recording formats in order of preference (Handoff brief: H.264, then VP9, then VP8). */
 export const recordingMimeTypes = ['video/webm;codecs=h264,opus', 'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus'];
 
+/** The format for an audio-only take (camera off). */
+export const audioOnlyMimeTypes = ['audio/webm;codecs=opus'];
+
 /** The first preferred format the browser can record, or '' to let it choose. */
-export function chooseMimeType(isTypeSupported: (mimeType: string) => boolean): string {
-	return recordingMimeTypes.find(isTypeSupported) ?? '';
+export function chooseMimeType(isTypeSupported: (mimeType: string) => boolean, withVideo = true): string {
+	return (withVideo ? recordingMimeTypes : audioOnlyMimeTypes).find(isTypeSupported) ?? '';
 }
 
 const videoCodecs: [RegExp, string][] = [

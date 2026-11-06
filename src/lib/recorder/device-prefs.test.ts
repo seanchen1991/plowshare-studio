@@ -3,17 +3,18 @@ import { findDevice, micKey, parseDevicePrefs } from './device-prefs.ts';
 
 describe('parseDevicePrefs', () => {
 	it('reads saved choices', () => {
-		const text = '{"camera":{"id":"c","label":"Cam"},"mic":{"id":"m","label":"Mic"},"cleanUpAudio":{"Mic":true}}';
+		const text = '{"camera":{"id":"c","label":"Cam"},"cameraOff":true,"mic":{"id":"m","label":"Mic"},"cleanUpAudio":{"Mic":true}}';
 		expect(parseDevicePrefs(text)).toEqual({
 			camera: { id: 'c', label: 'Cam' },
+			cameraOff: true,
 			mic: { id: 'm', label: 'Mic' },
 			cleanUpAudio: { Mic: true }
 		});
 	});
 
 	it('starts empty when nothing or garbage is stored', () => {
-		expect(parseDevicePrefs(null)).toEqual({ camera: undefined, mic: undefined, cleanUpAudio: {} });
-		expect(parseDevicePrefs('not json')).toEqual({ cleanUpAudio: {} });
+		expect(parseDevicePrefs(null)).toEqual({ camera: undefined, cameraOff: false, mic: undefined, cleanUpAudio: {} });
+		expect(parseDevicePrefs('not json')).toEqual({ cameraOff: false, cleanUpAudio: {} });
 		expect(parseDevicePrefs('{"camera":{"id":3}}').camera).toBeUndefined();
 	});
 });

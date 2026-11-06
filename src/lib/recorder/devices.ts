@@ -7,9 +7,10 @@ export function openDevices(choice: CaptureChoice): Promise<MediaStream> {
 	return navigator.mediaDevices.getUserMedia(captureConstraints(choice));
 }
 
-/** Opens exactly this camera. */
-export async function openCamera(cameraId: string): Promise<MediaStreamTrack> {
-	const stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints(cameraId, true) });
+/** Opens exactly this camera; with no id (none listed yet), the saved one if it's there, or any. */
+export async function openCamera(cameraId: string | undefined, preferredId?: string): Promise<MediaStreamTrack> {
+	const constraints = cameraId ? videoConstraints(cameraId, true) : videoConstraints(preferredId);
+	const stream = await navigator.mediaDevices.getUserMedia({ video: constraints });
 	return stream.getVideoTracks()[0]!;
 }
 

@@ -220,23 +220,38 @@
 		}
 	}
 
-	async function finalize(session: Session) {
-		const recordingId = session.recordings[0]!.id;
-		progress[session.id] = 0;
-		await finalizeRecording(session.id, recordingId, (p) => (progress[session.id] = p));
-		delete progress[session.id];
-		await refresh();
-		await backUpNew(session.id);
+	// One take finalizes at a time, in the order they stopped, so takes recorded back to back
+	// don't compete for the disk with each other (and with the take being captured).
+	let finishing: Promise<void> = Promise.resolve();
+
+	function inTurn(job: () => Promise<void>): Promise<void> {
+		const turn = finishing.then(job).catch(() => {});
+		finishing = turn;
+		return turn;
 	}
 
-	async function recover(session: Session) {
-		const recordingId = session.recordings[0]!.id;
-		progress[session.id] = 0;
+	/** Finalizes a take once the ones before it are done. `held` hands over a just-stopped take's lock. */
+	function finalize(session: Session, held?: () => void) {
+		return inTurn(async () => {
+			const recordingId = session.recordings[0]!.id;
+			progress[session.id] = 0;
+			await finalizeRecording(session.id, recordingId, (p) => (progress[session.id] = p), held);
+			delete progress[session.id];
+			await refresh();
+			await backUpNew(session.id);
+		});
+	}
+
+	function recover(session: Session) {
 		sessions = sessions.map((s) => (s.id === session.id ? { ...s, recordings: s.recordings.map((r) => ({ ...r, state: 'finalizing' })) } : s));
-		await recoverRecording(session.id, recordingId, (p) => (progress[session.id] = p));
-		delete progress[session.id];
-		await refresh();
-		await backUpNew(session.id);
+		return inTurn(async () => {
+			const recordingId = session.recordings[0]!.id;
+			progress[session.id] = 0;
+			await recoverRecording(session.id, recordingId, (p) => (progress[session.id] = p));
+			delete progress[session.id];
+			await refresh();
+			await backUpNew(session.id);
+		});
 	}
 </script>
 
@@ -303,10 +318,10 @@
 					lastTakeId = session.id;
 					void refresh();
 				}}
-				onStopped={async (session) => {
+				onStopped={async ({ session, release }) => {
 					capturing = false;
+					void finalize(session, release);
 					await refresh();
-					void finalize(session);
 				}}
 				onShowTakes={() => (screen = 'takes')}
 				onTakeChanged={refresh}

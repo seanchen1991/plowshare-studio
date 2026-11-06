@@ -9,6 +9,8 @@ export interface CaptureChoice {
 	micId?: string;
 	/** The browser's echo cancellation, noise suppression and automatic gain; off unless chosen. */
 	cleanUpAudio?: boolean;
+	/** Record audio only, without opening a camera. */
+	cameraOff?: boolean;
 }
 
 /**
@@ -39,8 +41,8 @@ export function audioConstraints(micId?: string, cleanUpAudio = false, exact = f
 	};
 }
 
-export function captureConstraints({ cameraId, micId, cleanUpAudio }: CaptureChoice = {}): MediaStreamConstraints {
-	return { video: videoConstraints(cameraId), audio: audioConstraints(micId, cleanUpAudio) };
+export function captureConstraints({ cameraId, micId, cleanUpAudio, cameraOff }: CaptureChoice = {}): MediaStreamConstraints {
+	return { video: cameraOff ? false : videoConstraints(cameraId), audio: audioConstraints(micId, cleanUpAudio) };
 }
 
 export const audioBitsPerSecond = 160_000;
