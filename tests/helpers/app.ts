@@ -172,3 +172,27 @@ export function listOpfs(page: Page, path: string): Promise<Record<string, numbe
 		}
 	}, path);
 }
+
+/**
+ * Writes a Session whose two Segments are two recorded takes' files, with a
+ * Capture gap of `gapUs` between them, as a device drop would leave; then
+ * reloads so the app lists it. Faster than dropping a device mid-take.
+ */
+export async function glueTakes(page: Page, first: Session, second: Session, gapUs: number, title = 'Two Segments'): Promise<Session> {
+	const [a, b] = [first.recordings[0]!.segments[0]!, second.recordings[0]!.segments[0]!];
+	const session: Session = {
+		...first,
+		id: `${first.id}glued`,
+		title,
+		recordings: [{ ...first.recordings[0]!, segments: [a, { ...b, index: 2, startUs: a.durationUs! + gapUs }] }]
+	};
+	await page.evaluate(async (session) => {
+		const sessions = await (await navigator.storage.getDirectory()).getDirectoryHandle('sessions');
+		const dir = await sessions.getDirectoryHandle(session.id, { create: true });
+		const writable = await (await dir.getFileHandle('session.json', { create: true })).createWritable();
+		await writable.write(JSON.stringify(session));
+		await writable.close();
+	}, session);
+	await page.reload();
+	return session;
+}

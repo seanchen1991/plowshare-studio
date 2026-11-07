@@ -29,6 +29,9 @@
 	import { checkSessionsOnLaunch, listSessions } from '../lib/storage/sessions';
 	import { showOf, type Show } from '../lib/storage/show-file';
 	import { listShows } from '../lib/storage/shows';
+	import type { Project } from '../lib/storage/project-file';
+	import { lastProjectId, loadProject, projectForSession, setLastProjectId } from '../lib/storage/projects';
+	import EditScreen from './EditScreen.svelte';
 	import RecordScreen from './RecordScreen.svelte';
 	import SegmentedControl from './SegmentedControl.svelte';
 	import TakesScreen from './TakesScreen.svelte';
@@ -44,14 +47,18 @@
 		unknown: "Plowshare Studio doesn't support this browser yet."
 	};
 
-	const screens: { value: Screen; label: string; disabled?: boolean }[] = [
-		{ value: 'record', label: 'Record' },
-		{ value: 'takes', label: 'Takes' },
-		{ value: 'edit', label: 'Edit', disabled: true }
-	];
-
 	let screen = $state<Screen>('record');
 	let sessions = $state<Session[]>([]);
+	// The Project the Edit tab opens: the last one opened, while its take is still Ready.
+	let project = $state<Project | null>(null);
+	const editSession = $derived(
+		sessions.find((s) => s.id === project?.sessions[0]?.sessionId && sessionState(s) === 'ready') ?? null
+	);
+	const screens = $derived<{ value: Screen; label: string; disabled?: boolean }[]>([
+		{ value: 'record', label: 'Record' },
+		{ value: 'takes', label: 'Takes' },
+		{ value: 'edit', label: 'Edit', disabled: !editSession }
+	]);
 	let shows = $state<Show[]>([]);
 	let progress = $state<Record<string, number>>({});
 	let lastTakeId = $state<string | null>(null);
@@ -95,6 +102,27 @@
 	$effect(() => {
 		if (screen === 'takes') recoveredIds = [];
 	});
+
+	// The take being edited was deleted.
+	$effect(() => {
+		if (screen === 'edit' && !editSession) screen = 'takes';
+	});
+
+	/** Edit on a Ready take: opens its Project, made the first time. */
+	async function edit(session: Session) {
+		project = await projectForSession(session);
+		setLastProjectId(project.id);
+		screen = 'edit';
+	}
+
+	async function loadLastProject() {
+		const id = lastProjectId();
+		if (!id) return;
+		project = await loadProject(id).catch(() => {
+			setLastProjectId(null);
+			return null;
+		});
+	}
 
 	function recoveredSummary(session: Session): string {
 		const recording = session.recordings[0]!;
@@ -206,6 +234,7 @@
 		persistence = await currentPersistence();
 		await refreshShows();
 		void startBackups();
+		await loadLastProject();
 		await launch();
 	}
 
@@ -324,6 +353,7 @@
 					await refresh();
 				}}
 				onShowTakes={() => (screen = 'takes')}
+				onEdit={edit}
 				onTakeChanged={refresh}
 				onRetry={finalize}
 				onRecordPressed={() => {
@@ -344,6 +374,7 @@
 				browser={support.browser}
 				onRecover={recover}
 				onRetry={finalize}
+				onEdit={edit}
 				onChanged={refresh}
 				{shows}
 				onShowsChanged={refreshShows}
@@ -355,6 +386,14 @@
 				onRetryBackup={() => (backupAccess === 'prompt' ? allowAccess() : copyPending())}
 			/>
 		</section>
+		<!-- Mounted only while open, so playback and peak decoding stop when the user leaves it. -->
+		{#if screen === 'edit' && project && editSession}
+			<section aria-label="Edit">
+				{#key project.id}
+					<EditScreen {project} session={editSession} />
+				{/key}
+			</section>
+		{/if}
 	</main>
 {:else}
 	<main class="unsupported">

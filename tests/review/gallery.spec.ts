@@ -5,7 +5,7 @@
 
 import { mkdirSync } from 'node:fs';
 import { expect, test, type Page, type TestInfo } from '@playwright/test';
-import { seedShows, seedTake } from '../helpers/app.ts';
+import { glueTakes, opfsFileExists, recordTake, seedShows, seedTake } from '../helpers/app.ts';
 import { safetyMarginBytes } from '../../src/lib/storage/time-left.ts';
 
 const widths = [
@@ -54,6 +54,37 @@ for (const size of widths) {
 			await page.getByRole('button', { name: 'Stop' }).click();
 			await expect(page.getByTestId('session').first()).toHaveAttribute('data-state', 'ready', { timeout: 30_000 });
 			await shot(page, testInfo, 'record-4-last-take');
+		});
+
+		test('The editor', async ({ page }, testInfo) => {
+			test.setTimeout(150_000);
+			await page.goto('/');
+			// A take with two Segments and a Capture gap between them.
+			const session = await glueTakes(page, await recordTake(page, 8), await recordTake(page, 5), 4_000_000, 'Episode 3 – take 2');
+			await page.getByRole('tab', { name: 'Takes' }).click();
+			await page.locator(`[data-session-id="${session.id}"]`).getByRole('button', { name: 'Edit' }).click();
+			const [, second] = session.recordings[0]!.segments;
+			// Wait for both Segments' peaks.
+			await expect.poll(() => opfsFileExists(page, second!.path!.replace(/\.[^.]+$/, '.peaks')), { timeout: 30_000 }).toBe(true);
+			const ruler = page.getByTestId('ruler');
+			const box = (await ruler.boundingBox())!;
+			await ruler.click({ position: { x: box.width * 0.72, y: box.height / 2 } });
+			await expect(page.getByTestId('stage')).toHaveAttribute('data-showing', 'segment');
+			await page.waitForTimeout(500);
+			await shot(page, testInfo, 'edit-1-two-segments');
+
+			await ruler.click({ position: { x: box.width * 0.52, y: box.height / 2 } });
+			await expect(page.getByTestId('stage')).toHaveAttribute('data-showing', 'gap');
+			await shot(page, testInfo, 'edit-2-in-a-capture-gap');
+
+			// An audio-only take.
+			await page.getByRole('tab', { name: 'Record' }).click();
+			await page.getByRole('combobox', { name: 'Camera' }).selectOption({ label: 'Camera off (audio only)' });
+			await recordTake(page, 6);
+			await page.getByTestId('session').first().getByRole('button', { name: 'Edit' }).click();
+			await expect(page.getByTestId('audio-only')).toBeVisible();
+			await page.waitForTimeout(2000);
+			await shot(page, testInfo, 'edit-3-audio-only');
 		});
 
 		test('A take paused', async ({ page }, testInfo) => {

@@ -32,6 +32,7 @@
 		onShowTakes,
 		onTakeChanged,
 		onRetry,
+		onEdit,
 		onRecordPressed,
 		persistence,
 		shows,
@@ -52,6 +53,8 @@
 		onTakeChanged: () => void;
 		/** Runs Finalizing again for a take it failed for. */
 		onRetry: (session: Session) => void;
+		/** Opens a Ready take in the editor. */
+		onEdit: (session: Session) => void;
 		/** Record was pressed (the countdown starts): the moment to ask the browser to keep recordings. */
 		onRecordPressed: () => void;
 		persistence: Persistence;
@@ -613,7 +616,7 @@
 				<h2>Last take</h2>
 				<button class="link" onclick={onShowTakes}>All takes</button>
 			</div>
-			<ul><TakeRow session={lastTake} {progress} {persistence} {shows} onChanged={onTakeChanged} onRetry={() => onRetry(lastTake)} /></ul>
+			<ul><TakeRow session={lastTake} {progress} {persistence} {shows} onChanged={onTakeChanged} onRetry={() => onRetry(lastTake)} onEdit={() => onEdit(lastTake)} /></ul>
 		</section>
 	{/if}
 </div>
