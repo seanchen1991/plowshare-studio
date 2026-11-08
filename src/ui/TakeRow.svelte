@@ -31,6 +31,7 @@
 		progress,
 		onRecover,
 		onRetry,
+		onEdit,
 		onChanged,
 		persistence,
 		shows,
@@ -40,6 +41,8 @@
 		progress?: number;
 		onRecover?: () => void;
 		onRetry?: () => void;
+		/** Opens the take in the editor. */
+		onEdit?: () => void;
 		onChanged: () => void;
 		persistence: Persistence;
 		shows: Show[];
@@ -181,6 +184,7 @@
 					}))}>Download</Menu
 				>
 			{/if}
+			{#if onEdit}<Button variant="primary" onclick={onEdit}>Edit</Button>{/if}
 		{:else if takeState === 'interrupted' && onRecover}
 			<Button variant="primary" onclick={onRecover}>Recover</Button>
 		{:else if failed && progress === undefined && onRetry}
@@ -268,7 +272,7 @@
 <style>
 	li {
 		display: grid;
-		grid-template-columns: minmax(0, 1fr) 64px 120px 200px;
+		grid-template-columns: minmax(0, 1fr) 64px 120px 260px;
 		align-items: center;
 		column-gap: 16px;
 		padding: 12px 16px;

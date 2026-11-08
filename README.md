@@ -24,7 +24,7 @@ pnpm test:e2e     # browser tests (Playwright), against a production build
 
 Browser tests use a generated test fixture as Chrome's fake camera and mic: a looping video with a running timestamp, a binary frame counter and a white flash on every beep, plus a beep track (a higher marker tone every 10 seconds). It needs ffmpeg on your PATH. Playwright builds it into `tests/fixtures/.generated/` (gitignored) when missing; `pnpm fixture` rebuilds it. The layout is defined in `tests/fixtures/spec.ts`, and `tests/helpers/beeps.ts` finds the beeps in recorded audio so tests can measure lost time and sync.
 
-Browser tests tagged `@long` (hour-long recordings, crash runs) are skipped unless `LONG_TESTS=1` is set. CI runs them weekly and on demand through the "Long tests" workflow.
+Browser tests tagged `@long` (hour-long recordings, crash runs, opening an hour-long take in the editor) are skipped unless `LONG_TESTS=1` is set. The editor's hour-long take is made with ffmpeg the first time and kept in `tests/fixtures/.generated/`. CI runs them weekly and on demand through the "Long tests" workflow.
 
 ### Build and deploy
 

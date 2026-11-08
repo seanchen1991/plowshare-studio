@@ -12,7 +12,7 @@ import { writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
 import { fixtureFiles, fixtureSpec as s } from '../fixtures/spec.ts';
-import { saveOpfsFile, recordTake } from '../helpers/app.ts';
+import { opfsFileExists, saveOpfsFile, recordTake } from '../helpers/app.ts';
 import { toneOnsets } from '../helpers/beeps.ts';
 import { greyFrame } from '../helpers/frame-code.ts';
 import { decodeAudio, packetTimes, probeDurationSeconds, probeStreams } from '../helpers/media-file.ts';
@@ -146,6 +146,23 @@ test('records a take from the real camera and mic', async ({ page, browserName }
 	}, seconds / 2);
 	expect(Math.abs(seeked.duration - duration)).toBeLessThan(1);
 	expect(Math.abs(seeked.currentTime - seconds / 2)).toBeLessThan(0.5);
+
+	// Opens in the editor, with the real mic's waveform drawn and the real camera's picture at the playhead.
+	await page.getByTestId('session').first().getByRole('button', { name: 'Edit' }).click();
+	await expect.poll(() => opfsFileExists(page, segment.path!.replace(/\.[^.]+$/, '.peaks')), { timeout: 30_000 }).toBe(true);
+	const ruler = page.getByTestId('ruler');
+	const box = (await ruler.boundingBox())!;
+	await ruler.click({ position: { x: box.width / 2, y: box.height / 2 } });
+	await expect(page.getByTestId('stage')).toHaveAttribute('data-showing', 'segment');
+	await page.waitForTimeout(500);
+	await page.screenshot({ path: testInfo.outputPath('7-editor.png') });
+	const drawn = await page.getByTestId('lane').locator('canvas').evaluate((canvas: HTMLCanvasElement) => {
+		const { data } = canvas.getContext('2d')!.getImageData(0, 0, canvas.width, canvas.height);
+		let painted = 0;
+		for (let i = 3; i < data.length; i += 4) if (data[i]! > 0) painted++;
+		return painted;
+	});
+	expect(drawn).toBeGreaterThan(0);
 });
 
 test('switches between every real camera and mic', async ({ page }, testInfo) => {

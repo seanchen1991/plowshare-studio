@@ -13,3 +13,12 @@ export function formatBytes(bytes: number): string {
 	if (bytes >= 1e6) return `${Math.round(bytes / 1e6)} MB`;
 	return `${Math.max(1, Math.round(bytes / 1e3))} KB`;
 }
+
+/** The editor's timecode: 00:00.0, or 1:02:03.4 past an hour, from microseconds (tenths rounded down). */
+export function formatTimecode(us: number): string {
+	const tenths = Math.floor(Math.max(0, us) / 1e5);
+	const h = Math.floor(tenths / 36000);
+	const m = String(Math.floor((tenths % 36000) / 600)).padStart(2, '0');
+	const s = String(Math.floor((tenths % 600) / 10)).padStart(2, '0');
+	return `${h > 0 ? `${h}:` : ''}${m}:${s}.${tenths % 10}`;
+}

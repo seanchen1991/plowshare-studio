@@ -18,6 +18,7 @@
 		progress,
 		onRecover,
 		onRetry,
+		onEdit,
 		onChanged,
 		persistence,
 		browser,
@@ -36,6 +37,8 @@
 		browser: SupportedBrowser;
 		onRecover: (session: Session) => void;
 		onRetry: (session: Session) => void;
+		/** Opens a Ready take in the editor. */
+		onEdit: (session: Session) => void;
 		onChanged: () => void;
 		shows: Show[];
 		/** A Show was created, renamed or deleted. */
@@ -143,7 +146,7 @@
 	{:else}
 		<ul>
 			{#each listed as session (session.id)}
-				<TakeRow {session} progress={progress[session.id]} onRecover={() => onRecover(session)} onRetry={() => onRetry(session)} {onChanged} {persistence} {shows} {onRetryBackup} />
+				<TakeRow {session} progress={progress[session.id]} onRecover={() => onRecover(session)} onRetry={() => onRetry(session)} onEdit={() => onEdit(session)} {onChanged} {persistence} {shows} {onRetryBackup} />
 			{/each}
 		</ul>
 	{/if}
