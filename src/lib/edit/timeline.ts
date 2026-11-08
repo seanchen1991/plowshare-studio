@@ -42,12 +42,42 @@ export function locate(segments: PlacedSegment[], timeUs: number): Position {
 /** Steps between ruler marks, in seconds. */
 const rulerSteps = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600];
 
-/** Times of the ruler's marks: the smallest step that keeps them `minSpacingPx` apart. */
-export function rulerMarks(durationUs: number, widthPx: number, minSpacingPx = 80): number[] {
-	if (durationUs <= 0 || widthPx <= 0) return [0];
-	const pxPerSecond = widthPx / (durationUs / 1e6);
-	const step = rulerSteps.find((s) => s * pxPerSecond >= minSpacingPx) ?? rulerSteps.at(-1)!;
+/**
+ * Times of the ruler's marks between `fromUs` and `toUs` (the part on screen),
+ * at the smallest step that keeps them `minSpacingPx` apart at this zoom.
+ */
+export function rulerMarks(fromUs: number, toUs: number, pxPerSecond: number, minSpacingPx = 80): number[] {
+	if (toUs <= fromUs || pxPerSecond <= 0) return [0];
+	const step = (rulerSteps.find((s) => s * pxPerSecond >= minSpacingPx) ?? rulerSteps.at(-1)!) * 1e6;
 	const marks: number[] = [];
-	for (let us = 0; us <= durationUs; us += step * 1e6) marks.push(us);
+	for (let us = Math.floor(Math.max(0, fromUs) / step) * step; us <= toUs; us += step) marks.push(us);
 	return marks;
+}
+
+/** Each zoom step doubles or halves how much of the timeline is on screen. */
+export const zoomStep = 2;
+
+/**
+ * How far in the timeline can zoom, as a multiple of fitting it all in `widthPx`:
+ * down to 5 s across, or more when that would draw more bars than there are peaks.
+ */
+export function maxZoom(durationUs: number, widthPx: number, barStepPx: number, peaksPerSecond: number): number {
+	const closestUs = Math.max(5e6, (widthPx / barStepPx / peaksPerSecond) * 1e6);
+	return Math.max(1, durationUs / closestUs);
+}
+
+/**
+ * Following the playhead while it plays: once it runs off the right edge of the
+ * view, turn the page so it sits near the left. Returns where to scroll, or null to stay.
+ * A playhead the user has scrolled away from isn't followed.
+ */
+export function followPlayhead(fromPx: number, toPx: number, scrollPx: number, viewPx: number): number | null {
+	const end = scrollPx + viewPx;
+	if (fromPx >= scrollPx && fromPx <= end && toPx > end) return toPx - viewPx * 0.1;
+	return null;
+}
+
+/** Bringing a playhead that jumped out of view back into it, centred; null when it's in view. */
+export function revealPlayhead(px: number, scrollPx: number, viewPx: number): number | null {
+	return px < scrollPx || px > scrollPx + viewPx ? px - viewPx / 2 : null;
 }

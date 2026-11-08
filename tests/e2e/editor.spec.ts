@@ -5,7 +5,7 @@
 
 import { expect, test, type Page } from '@playwright/test';
 import { fixtureSpec } from '../fixtures/spec.ts';
-import { glueTakes, readOpfsJson, recordTake, saveOpfsFile } from '../helpers/app.ts';
+import { glueTakes, opfsFileExists, readOpfsJson, recordTake, saveOpfsFile } from '../helpers/app.ts';
 import { detectBeeps } from '../helpers/beeps.ts';
 import { useFixtureMedia } from '../helpers/fake-media.ts';
 import { decodeAudio } from '../helpers/media-file.ts';
@@ -237,4 +237,242 @@ test('an audio-only take opens with its waveform and plays', async ({ page }) =>
 	expect(state.paused).toBe(false);
 	expect(state.currentTime).toBeGreaterThan(0.6);
 	expect(await playheadSeconds(page)).toBeGreaterThan(0.6);
+});
+
+/** What the timeline shows: its zoom, how far it's scrolled, and its widths in px. */
+const view = (page: Page) =>
+	page.evaluate(() => {
+		const timeline = document.querySelector<HTMLElement>('[data-testid="timeline"]')!;
+		const scroller = document.querySelector<HTMLElement>('[data-testid="scroller"]')!;
+		return {
+			zoom: Number(timeline.dataset.zoom),
+			scrollLeft: scroller.scrollLeft,
+			viewWidth: scroller.clientWidth,
+			contentWidth: scroller.scrollWidth
+		};
+	});
+
+/** Where the playhead is drawn, in px from the view's left edge; outside 0–width when scrolled out of view. */
+async function playheadX(page: Page): Promise<number> {
+	const [playhead, scroller] = await Promise.all([page.getByTestId('playhead').boundingBox(), page.getByTestId('scroller').boundingBox()]);
+	return playhead!.x + playhead!.width / 2 - scroller!.x;
+}
+
+/** The widest run of tall bars (over half the lane) within ±20 px of `x` in the view, in CSS px. */
+function tallRunWidth(page: Page, x: number): Promise<number> {
+	return page.getByTestId('lane').locator('canvas').evaluate((canvas: HTMLCanvasElement, x) => {
+		const ratio = canvas.width / canvas.clientWidth;
+		const from = Math.max(0, Math.round((x - 20) * ratio));
+		const columns = Math.min(canvas.width - from, Math.round(40 * ratio));
+		const { data } = canvas.getContext('2d')!.getImageData(from, 0, columns, canvas.height);
+		const tall = (column: number) => {
+			let count = 0;
+			for (let y = 0; y < canvas.height; y++) if (data[(y * columns + column) * 4 + 3]! > 0) count++;
+			return count > canvas.height / 2;
+		};
+		let first = -1;
+		let last = -1;
+		for (let column = 0; column < columns; column++) {
+			if (!tall(column)) continue;
+			if (first < 0) first = column;
+			last = column;
+		}
+		return first < 0 ? 0 : (last - first + 1) / ratio;
+	}, x);
+}
+
+/** Opens a take of two 4 s Segments with a 20 s Capture gap, once its peaks are in; returns its length in µs and the beeps in its first Segment. */
+async function openGappedTake(page: Page): Promise<{ totalUs: number; beepsUs: number[] }> {
+	await page.goto('/');
+	const session = await glueTakes(page, await recordTake(page, 4), await recordTake(page, 4), 20_000_000);
+	const [a, b] = session.recordings[0]!.segments as [Segment, Segment];
+	await page.getByRole('tab', { name: 'Takes' }).click();
+	await page.getByRole('region', { name: 'Takes' }).locator(`[data-session-id="${session.id}"]`).getByRole('button', { name: 'Edit' }).click();
+	await expect(page.getByTestId('editor')).toBeVisible();
+	const cache = (segment: Segment) => segment.path!.replace(/\.[^.]+$/, '.peaks');
+	await expect.poll(() => opfsFileExists(page, cache(b)), { timeout: 30_000 }).toBe(true);
+	await expect(page.getByTestId('stage')).toHaveAttribute('data-showing', 'segment');
+	// Where each beep starts, from the cached peaks: a loud bin after a quiet one.
+	const peaks = await readOpfsBytes(page, cache(a));
+	const beepsUs = peaks.flatMap((byte, i) => (peakDb(byte) > -20 && peakDb(peaks[i - 1] ?? 0) < -40 ? [(i * 1e6) / peaksPerSecond] : []));
+	return { totalUs: a.durationUs! + 20_000_000 + b.durationUs!, beepsUs };
+}
+
+test('skip, speed and zoom work from the toolbar and the keyboard', async ({ page }) => {
+	test.setTimeout(150_000);
+	const { totalUs } = await openGappedTake(page);
+	const video = page.getByTestId('editor-video');
+	const speed = page.getByTestId('speed');
+
+	// Skip forward and back, 5 s at a time, from the toolbar and with ← → and J.
+	await page.getByRole('button', { name: 'Forward 5 seconds' }).click();
+	await expect.poll(() => playheadSeconds(page)).toBe(5);
+	await page.keyboard.press('ArrowRight');
+	await expect.poll(() => playheadSeconds(page)).toBe(10);
+	await page.keyboard.press('ArrowLeft');
+	await expect.poll(() => playheadSeconds(page)).toBe(5);
+	await page.getByRole('button', { name: 'Back 5 seconds' }).click();
+	await expect.poll(() => playheadSeconds(page)).toBe(0);
+	await page.keyboard.press('j');
+	await expect.poll(() => playheadSeconds(page)).toBe(0);
+	await page.keyboard.press('ArrowRight');
+	await page.keyboard.press('j');
+	await expect.poll(() => playheadSeconds(page)).toBe(0);
+	await expect(page.getByTestId('stage')).toHaveAttribute('data-showing', 'segment');
+
+	// Space, L and K play and pause; Space plays even with a toolbar button focused, without pressing it.
+	await page.keyboard.press('Space');
+	await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible();
+	await page.keyboard.press('k');
+	await expect(page.getByRole('button', { name: 'Play' })).toBeVisible();
+	await page.keyboard.press('l');
+	await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible();
+	await page.keyboard.press('Space');
+	await expect(page.getByRole('button', { name: 'Play' })).toBeVisible();
+	await page.getByRole('button', { name: 'Zoom in' }).focus();
+	await page.keyboard.press('Space');
+	await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible();
+	expect((await view(page)).zoom).toBe(1);
+	await page.keyboard.press('Space');
+	await page.getByRole('button', { name: 'Back 5 seconds' }).click();
+
+	// Speed steps 1×, 1.5×, 2× and back to 1×.
+	await expect(speed).toHaveText('1×');
+	await speed.click();
+	await expect(speed).toHaveText('1.5×');
+	expect(await video.evaluate((v: HTMLVideoElement) => v.playbackRate)).toBe(1.5);
+	await speed.click();
+	await expect(speed).toHaveText('2×');
+	await expect(speed).toHaveAccessibleName('Speed 2×');
+	// At 2× the playhead runs twice as fast, in a Segment...
+	let before = await playheadSeconds(page);
+	await page.getByRole('button', { name: 'Play' }).click();
+	await page.waitForTimeout(1000);
+	await page.getByRole('button', { name: 'Pause' }).click();
+	let ran = (await playheadSeconds(page)) - before;
+	expect(ran).toBeGreaterThan(1.6);
+	expect(ran).toBeLessThan(2.8);
+	// ...through a Capture gap...
+	await page.keyboard.press('ArrowRight');
+	await page.keyboard.press('ArrowRight');
+	await expect(page.getByTestId('stage')).toHaveAttribute('data-showing', 'gap');
+	before = await playheadSeconds(page);
+	await page.keyboard.press('Space');
+	await page.waitForTimeout(1000);
+	await page.keyboard.press('Space');
+	ran = (await playheadSeconds(page)) - before;
+	expect(ran).toBeGreaterThan(1.6);
+	expect(ran).toBeLessThan(2.8);
+	// ...and in the next Segment's file too.
+	const ruler = page.getByTestId('ruler');
+	await ruler.click({ position: { x: ((totalUs - 2e6) / totalUs) * (await ruler.boundingBox())!.width, y: 12 } });
+	await expect(page.getByTestId('stage')).toHaveAttribute('data-showing', 'segment');
+	expect(await video.evaluate((v: HTMLVideoElement) => v.playbackRate)).toBe(2);
+	await speed.click();
+	await expect(speed).toHaveText('1×');
+	expect(await video.evaluate((v: HTMLVideoElement) => v.playbackRate)).toBe(1);
+
+	// Zoom with + and −, the toolbar, and Ctrl and the wheel (a trackpad pinch).
+	const zoomOut = page.getByRole('button', { name: 'Zoom out' });
+	const zoomIn = page.getByRole('button', { name: 'Zoom in' });
+	await expect(zoomOut).toBeDisabled();
+	await page.keyboard.press('+');
+	await expect.poll(async () => (await view(page)).zoom).toBe(2);
+	await page.keyboard.press('=');
+	await expect.poll(async () => (await view(page)).zoom).toBe(4);
+	await page.keyboard.press('-');
+	await expect.poll(async () => (await view(page)).zoom).toBe(2);
+	await zoomOut.click();
+	await expect.poll(async () => (await view(page)).zoom).toBe(1);
+	await expect(zoomOut).toBeDisabled();
+	// All the way in: a few seconds across, and no further.
+	while (await zoomIn.isEnabled()) await zoomIn.click();
+	const zoomed = await view(page);
+	const [m, s] = (await page.getByTestId('timecode').innerText()).split('/')[1]!.trim().split(':');
+	const across = (Number(m) * 60 + Number(s)) / zoomed.zoom;
+	expect(across).toBeGreaterThanOrEqual(4.9);
+	expect(across).toBeLessThan(8);
+	expect(zoomed.contentWidth).toBeGreaterThan(zoomed.viewWidth * 3);
+	while (await zoomOut.isEnabled()) await page.keyboard.press('-');
+	const box = (await page.getByTestId('scroller').boundingBox())!;
+	await page.mouse.move(box.x + box.width / 2, box.y + 40);
+	await page.keyboard.down('Control');
+	await page.mouse.wheel(0, -200);
+	await page.keyboard.up('Control');
+	await expect.poll(async () => (await view(page)).zoom).toBeGreaterThan(2);
+
+	// Shortcuts don't fire while typing in a field.
+	while (await zoomOut.isEnabled()) await page.keyboard.press('-');
+	const at = await playheadSeconds(page);
+	await page.evaluate(() => document.body.append(Object.assign(document.createElement('input'), { id: 'field' })));
+	await page.locator('#field').focus();
+	await page.keyboard.type(' +jl');
+	await page.keyboard.press('ArrowRight');
+	await expect(page.locator('#field')).toHaveValue(' +jl');
+	await expect(page.getByRole('button', { name: 'Play' })).toBeVisible();
+	expect(await playheadSeconds(page)).toBe(at);
+	expect((await view(page)).zoom).toBe(1);
+});
+
+test('zoomed in, the timeline scrolls and follows the playhead, and the waveform stays sharp', async ({ page }) => {
+	test.setTimeout(150_000);
+	const { totalUs, beepsUs } = await openGappedTake(page);
+	expect(beepsUs.length).toBeGreaterThanOrEqual(3);
+	const beepX = async (us: number) => {
+		const v = await view(page);
+		return (us / totalUs) * v.contentWidth - v.scrollLeft;
+	};
+
+	// Zoomed out, a 50 ms beep is a bar, or two if it straddles them.
+	const beep = beepsUs[1]!;
+	expect(await tallRunWidth(page, await beepX(beep))).toBeLessThanOrEqual(5);
+
+	// Zooming keeps the playhead where it is on screen.
+	await page.getByTestId('ruler').click({ position: { x: (beep / totalUs) * (await view(page)).viewWidth, y: 12 } });
+	await expect.poll(() => playheadSeconds(page)).toBeCloseTo(beep / 1e6, 0);
+	const x = await playheadX(page);
+	while (await page.getByRole('button', { name: 'Zoom in' }).isEnabled()) await page.keyboard.press('+');
+	await expect.poll(() => playheadX(page)).toBeCloseTo(x, -1);
+
+	// Zoomed all the way in, the beep is drawn as wide as it lasts, from the fine peaks.
+	const pxPerSecond = (await view(page)).contentWidth / (totalUs / 1e6);
+	await expect.poll(async () => tallRunWidth(page, await beepX(beep))).toBeGreaterThanOrEqual(0.05 * pxPerSecond - 3);
+	expect(await tallRunWidth(page, await beepX(beep + 300_000))).toBe(0);
+	// The ruler marks every second.
+	const labels = await page.getByTestId('ruler').locator('.mark').allInnerTexts();
+	expect(labels).toContain('0:01');
+	expect(labels).toContain('0:02');
+
+	// Scrolling sideways moves the ruler and lanes together and redraws the waveform for what's in view.
+	await page.getByRole('button', { name: 'Back 5 seconds' }).click();
+	await page.getByTestId('scroller').evaluate((el) => (el.scrollLeft = 0));
+	const later = beepsUs.at(-1)!;
+	await page.getByTestId('scroller').evaluate((el, px) => (el.scrollLeft = px), (later / totalUs) * (await view(page)).contentWidth - 200);
+	await expect.poll(async () => tallRunWidth(page, await beepX(later))).toBeGreaterThanOrEqual(0.05 * pxPerSecond - 3);
+
+	// Playing from the start, the view turns the page as the playhead runs off the right edge.
+	await page.getByTestId('scroller').evaluate((el) => (el.scrollLeft = 0));
+	await page.getByTestId('speed').click();
+	await page.getByTestId('speed').click();
+	await page.getByRole('button', { name: 'Play' }).click();
+	await expect.poll(async () => (await view(page)).scrollLeft, { timeout: 10_000 }).toBeGreaterThan(0);
+	for (let i = 0; i < 5; i++) {
+		const playhead = await playheadX(page);
+		expect(playhead).toBeGreaterThanOrEqual(-2);
+		expect(playhead).toBeLessThanOrEqual((await view(page)).viewWidth + 2);
+		await page.waitForTimeout(400);
+	}
+	// A view the user scrolled away from stays put.
+	const away = (await view(page)).contentWidth - (await view(page)).viewWidth;
+	await page.getByTestId('scroller').evaluate((el, px) => (el.scrollLeft = px), away);
+	await page.waitForTimeout(1500);
+	expect((await view(page)).scrollLeft).toBeCloseTo(away, -1);
+	await page.getByRole('button', { name: 'Pause' }).click();
+
+	// Skipping to a time out of view brings it into view.
+	await page.getByTestId('scroller').evaluate((el) => (el.scrollLeft = 0));
+	await page.keyboard.press('ArrowRight');
+	await page.keyboard.press('ArrowRight');
+	await expect.poll(() => playheadX(page)).toBeGreaterThan(0);
+	expect(await playheadX(page)).toBeLessThan((await view(page)).viewWidth);
 });
