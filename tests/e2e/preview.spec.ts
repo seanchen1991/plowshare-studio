@@ -68,7 +68,7 @@ test('preview skips the Cuts, with sound and picture in step across every Cut an
 	const [a, b] = session.recordings[0]!.segments as [Segment, Segment];
 
 	// The beeps in each Segment's file, and the frame drawn with each, placed on the take's timeline.
-	const sourceBeeps: { atUs: number; frameCode: number }[] = [];
+	const sourceBeeps: { atUs: number; frameCode: number; hz: number }[] = [];
 	for (const segment of [a, b]) {
 		const file = testInfo.outputPath(`seg-${segment.index}.${segment.path!.split('.').at(-1)}`);
 		await saveOpfsFile(page, segment.path!, file);
@@ -76,7 +76,7 @@ test('preview skips the Cuts, with sound and picture in step across every Cut an
 		for (const beep of detectBeeps(decodeAudio(file, rate), rate)) {
 			const at = beep.timeSeconds + audioStart;
 			const frameCode = browserName === 'chromium' ? readFrameCode(greyFrameAt(file, at + 0.01)) : -1;
-			sourceBeeps.push({ atUs: segment.startUs + Math.round(at * 1e6), frameCode });
+			sourceBeeps.push({ atUs: segment.startUs + Math.round(at * 1e6), frameCode, hz: beep.frequencyHz });
 		}
 	}
 	const inA = sourceBeeps.filter((s) => s.atUs < a.durationUs!);
@@ -172,12 +172,13 @@ test('preview skips the Cuts, with sound and picture in step across every Cut an
 	await expect(page.getByTestId('speed')).toHaveText('2×');
 	const fast = beepsIn((await recordPreview(page, testInfo.outputPath('preview-2x.webm'), editUs / 2)).file);
 	const fastSpacingErrorsMs = expected.slice(1).map((e, i) => Math.round(((fast[i + 1]?.timeSeconds ?? NaN) - fast[0]!.timeSeconds - (e - expected[0]!) / 2) * 1000));
+	// Each beep's pitch at 2× against the same beep in the recording: unstretched, it would be twice as high.
 	const pitches = fast.map((h) => Math.round(h.frequencyHz));
-	console.log(`Preview at 2× (${browserName}): ${JSON.stringify({ heard: fast.length, fastSpacingErrorsMs, pitches })}`);
+	const pitchRatios = fast.slice(0, kept.length).map((h, i) => Math.round((h.frequencyHz / kept[i]!.hz) * 100) / 100);
+	console.log(`Preview at 2× (${browserName}): ${JSON.stringify({ heard: fast.length, fastSpacingErrorsMs, pitches, pitchRatios })}`);
 	expect(fast.length).toBeGreaterThanOrEqual(expected.length);
 	for (const error of fastSpacingErrorsMs) expect(Math.abs(error)).toBeLessThanOrEqual(40);
-	// The fixture's tones are 1 and 2 kHz; played faster without stretching, they'd be 2 and 4.
-	for (const hz of pitches) expect(Math.min(Math.abs(hz - fixtureSpec.toneHz), Math.abs(hz - fixtureSpec.markerHz))).toBeLessThan(150);
+	for (const ratio of pitchRatios) expect(Math.abs(ratio - 1)).toBeLessThan(0.08);
 });
 
 /**
