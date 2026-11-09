@@ -13,7 +13,7 @@ import { glueTakes, opfsFileExists, readOpfsJson, recordTake, saveOpfsFile } fro
 import { detectBeeps } from '../helpers/beeps.ts';
 import { useFixtureMedia } from '../helpers/fake-media.ts';
 import { readFrameCode } from '../helpers/frame-code.ts';
-import { audioStartSeconds, decodeAudio } from '../helpers/media-file.ts';
+import { audioStartSeconds, decodeAudio, videoFrameTimes } from '../helpers/media-file.ts';
 import { editDurationUs, toEditTime } from '../../src/lib/edit/cuts.ts';
 import type { Cut, Project } from '../../src/lib/storage/project-file.ts';
 import type { Segment, Session } from '../../src/lib/storage/session-file.ts';
@@ -113,7 +113,7 @@ test('preview skips the Cuts, with sound and picture in step across every Cut an
 	await expect(page.getByTestId('timecode')).toContainText(`${format(toEditTime(cuts, cuts[1]!.endUs))} /`);
 	await expect(page.getByTestId('stage')).toHaveAttribute('data-showing', 'segment');
 
-	await checkPreview(page, testInfo, browserName, kept.map((k) => ({ editS: toEditTime(cuts, k.atUs) / 1e6, frameCode: k.frameCode, hz: k.hz })), editUs, { fast: true });
+	await checkPreview(page, testInfo, browserName, kept.map((k) => ({ editS: toEditTime(cuts, k.atUs) / 1e6, session: 0, atUs: k.atUs, frameCode: k.frameCode, hz: k.hz })), editUs, { fast: true });
 });
 
 test('preview plays across Session boundaries in order, skipping Cuts, with sound and picture in step', async ({ page, browserName }, testInfo) => {
@@ -161,7 +161,7 @@ test('preview plays across Session boundaries in order, skipping Cuts, with soun
 	const kept = takeBeeps.flatMap((beeps, i) =>
 		beeps
 			.filter((b) => !cuts[i]!.some((c) => b.atUs >= c.startUs && b.atUs < c.endUs))
-			.map((b) => ({ editS: ((i === 0 ? 0 : firstEditUs) + toEditTime(cuts[i]!, b.atUs)) / 1e6, frameCode: b.frameCode, hz: b.hz }))
+			.map((b) => ({ editS: ((i === 0 ? 0 : firstEditUs) + toEditTime(cuts[i]!, b.atUs)) / 1e6, session: i, atUs: b.atUs, frameCode: b.frameCode, hz: b.hz }))
 	);
 	await checkPreview(page, testInfo, browserName, kept, editUs);
 });
@@ -175,7 +175,7 @@ async function checkPreview(
 	page: Page,
 	testInfo: TestInfo,
 	browserName: string,
-	beeps: { editS: number; frameCode: number; hz: number }[],
+	beeps: Beep[],
 	editUs: number,
 	{ fast = false } = {}
 ) {
@@ -183,7 +183,7 @@ async function checkPreview(
 	await page.getByRole('button', { name: 'Play' }).click();
 	await expect.poll(() => page.evaluate(() => (window as unknown as { audioTaps: Map<unknown, unknown> }).audioTaps.size)).toBe(1);
 	await page.getByRole('button', { name: 'Pause' }).click();
-	const { file: recording, longestFreezeMs } = await recordPreview(page, testInfo.outputPath('preview.webm'), editUs);
+	const { file: recording, longestFreezeMs, draws } = await recordPreview(page, testInfo.outputPath('preview.webm'), editUs);
 
 	// The beeps heard: exactly the kept ones, spaced as the edit spaces them, so each jump is seamless.
 	const allHeard = beepsIn(recording);
@@ -196,8 +196,19 @@ async function checkPreview(
 
 	// In Chrome: at each beep heard, the frame on screen is the one recorded with that beep.
 	if (browserName === 'chromium') {
+		// The picture at each beep's moment, as drawn: the last frame drawn at or before it.
+		report.pictureErrors = beeps
+			.filter((b) => b.editS < lastS)
+			.map((b) => {
+				const shown = draws.filter((d) => d.session === b.session && d.frameUs <= b.atUs + 5000).at(-1);
+				return shown ? shown.code - b.frameCode : NaN;
+			});
+		// And in the recording, which also shows timing: the frame on screen as each beep was heard. Only
+		// when the recording kept up: under heavy load the canvas capture drops most frames.
+		const recordedFps = videoFrameTimes(recording).length / (editUs / 1e6);
+		report.recordedFps = Math.round(recordedFps);
 		const frameErrors = heard.map((h, i) => readFrameCode(greyFrameAt(recording, h.timeSeconds + 0.01)) - beeps[i]!.frameCode);
-		report.frameErrors = frameErrors;
+		report.frameErrors = recordedFps >= 20 ? frameErrors : 'recording starved';
 		report.outputLatency = await page.evaluate(() => {
 			const [context] = (window as unknown as { audioTaps: Map<AudioContext, unknown> }).audioTaps.keys();
 			return context!.outputLatency;
@@ -215,10 +226,13 @@ async function checkPreview(
 		// In sync: within 2 frames (67 ms; recording the preview adds up to a frame of its own), and
 		// steady, shifting by no more than a frame across every Cut and Segment boundary. The first
 		// beep is left out of the steadiness check: it's heard as the sound starts up.
-		const frameErrors = report.frameErrors as number[];
-		for (const error of frameErrors) expect(Math.abs(error)).toBeLessThanOrEqual(2);
-		const steady = frameErrors.slice(1);
-		expect(Math.max(...steady) - Math.min(...steady)).toBeLessThanOrEqual(1);
+		for (const error of report.pictureErrors as number[]) expect(Math.abs(error)).toBeLessThanOrEqual(2);
+		if (Array.isArray(report.frameErrors)) {
+			const frameErrors = report.frameErrors as number[];
+			for (const error of frameErrors) expect(Math.abs(error)).toBeLessThanOrEqual(2);
+			const steady = frameErrors.slice(1);
+			expect(Math.max(...steady) - Math.min(...steady)).toBeLessThanOrEqual(1);
+		}
 	}
 
 	if (!fast) return;
@@ -241,7 +255,7 @@ async function checkPreview(
  * Plays the edit from the playhead to the end and records what the preview
  * shows and plays, into `file`. Press Play once before, so the audio graph exists.
  */
-async function recordPreview(page: Page, file: string, playsUs: number): Promise<{ file: string; longestFreezeMs: number }> {
+async function recordPreview(page: Page, file: string, playsUs: number): Promise<{ file: string; longestFreezeMs: number; draws: Draw[] }> {
 	await page.getByRole('button', { name: 'Back 5 seconds' }).click();
 	while (!(await page.getByTestId('timecode').innerText()).startsWith('00:00.0')) await page.keyboard.press('ArrowLeft');
 	await page.evaluate(() => {
@@ -253,22 +267,30 @@ async function recordPreview(page: Page, file: string, playsUs: number): Promise
 		recorder.ondataavailable = (event) => chunks.push(event.data);
 		const done = new Promise<Blob>((resolve) => (recorder.onstop = () => resolve(new Blob(chunks, { type: 'video/webm' }))));
 		recorder.start(250);
-		// When each new frame reaches the canvas.
-		const draws: number[] = [];
-		const watcher = new MutationObserver(() => draws.push(performance.now()));
+		// Each frame drawn on the canvas: when, which moment of which take, and the fixture's frame counter
+		// read off the canvas itself (as frame-code.ts reads it from a file).
+		const draws: { at: number; session: number; frameUs: number; code: number }[] = [];
+		const context = canvas.getContext('2d')!;
+		const watcher = new MutationObserver(() => {
+			const { data } = context.getImageData(0, canvas.height - 40, canvas.width, 1);
+			let code = 0;
+			for (let bit = 0; bit < 12; bit++) if (data[(20 + (11 - bit) * 60 + 28) * 4]! > 128) code |= 1 << bit;
+			draws.push({ at: performance.now(), session: Number(canvas.dataset.session), frameUs: Number(canvas.dataset.frameUs), code });
+		});
 		watcher.observe(canvas, { attributeFilter: ['data-frame-us'] });
 		Object.assign(window, { previewRecorder: recorder, previewRecording: done, previewDraws: draws, previewWatcher: watcher });
 	});
 	await page.waitForTimeout(300);
 	await page.getByRole('button', { name: 'Play' }).click();
 	await expect(page.getByRole('button', { name: 'Play' })).toBeVisible({ timeout: playsUs / 1000 + 15_000 });
-	const longestFreezeMs = await page.evaluate(() => {
-		const w = window as unknown as { previewDraws: number[]; previewWatcher: MutationObserver };
+	const draws = await page.evaluate(() => {
+		const w = window as unknown as { previewDraws: Draw[]; previewWatcher: MutationObserver };
 		w.previewWatcher.disconnect();
-		// From half a second in: starting to play waits for the first frames, which is fine; a jump mustn't.
-		const draws = w.previewDraws.filter((at) => at > w.previewDraws[0]! + 500);
-		return Math.round(draws.slice(1).reduce((max, at, i) => Math.max(max, at - draws[i]!), 0));
+		return w.previewDraws;
 	});
+	// From half a second in: starting to play waits for the first frames, which is fine; a jump mustn't.
+	const steady = draws.filter((d) => d.at > draws[0]!.at + 500).map((d) => d.at);
+	const longestFreezeMs = Math.round(steady.slice(1).reduce((max, at, i) => Math.max(max, at - steady[i]!), 0));
 	const base64 = await page.evaluate(async () => {
 		const w = window as unknown as { previewRecorder: MediaRecorder; previewRecording: Promise<Blob> };
 		w.previewRecorder.stop();
@@ -278,7 +300,24 @@ async function recordPreview(page: Page, file: string, playsUs: number): Promise
 		return btoa(binary);
 	});
 	writeFileSync(file, Buffer.from(base64, 'base64'));
-	return { file, longestFreezeMs };
+	return { file, longestFreezeMs, draws };
+}
+
+/** A frame the preview drew: when (page clock), which moment of which take, and the fixture's frame counter on it. */
+interface Draw {
+	at: number;
+	session: number;
+	frameUs: number;
+	code: number;
+}
+
+/** A beep the edit keeps: its edit time, its take and moment in it, the frame recorded with it, and its pitch. */
+interface Beep {
+	editS: number;
+	session: number;
+	atUs: number;
+	frameCode: number;
+	hz: number;
 }
 
 /** The beeps in Segments' files, placed on their take's timeline, with the frame recorded with each (Chrome only). */

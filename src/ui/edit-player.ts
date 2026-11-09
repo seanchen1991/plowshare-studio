@@ -2,11 +2,13 @@
 // Segment files, Capture gaps and (from issue 27) Sessions. Rather than seeking
 // a <video> element at every Cut, it decodes with Mediabunny and schedules the
 // audio on the Web Audio clock, sample-accurately, a little ahead, and draws
-// each video frame onto a canvas when that clock reaches it. The next piece
+// each video frame onto a canvas when that clock reaches it. Frames that are
+// already late are closed without being drawn, so a busy machine drops frames
+// rather than falling behind. The next piece
 // starts decoding while the current one plays, so a jump costs nothing.
 // Faster speeds are time-stretched, so voices keep their pitch.
 
-import { ALL_FORMATS, AudioBufferSink, BlobSource, CanvasSink, Input, type InputAudioTrack, type InputVideoTrack, type WrappedCanvas } from 'mediabunny';
+import { ALL_FORMATS, AudioBufferSink, BlobSource, Input, VideoSampleSink, type InputAudioTrack, type InputVideoTrack, type VideoSample } from 'mediabunny';
 import { editToSession, pieceAt, planDurationUs, sessionToEdit, type Piece } from '../lib/edit/plan';
 import { Stretcher } from '../lib/edit/stretch';
 import { readFile } from '../lib/storage/opfs';
@@ -33,6 +35,8 @@ interface Run {
 const aheadSeconds = 1.5;
 /** Time to decode the first audio and frame before playing starts. */
 const leadSeconds = 0.12;
+/** The next piece starts decoding this long before it's due. */
+const nextAheadUs = 1_500_000;
 /** Fades at each piece's edges, so a Cut doesn't click. */
 const fadeSeconds = 0.003;
 
@@ -49,7 +53,7 @@ export class EditPlayer {
 	durationUs: number;
 
 	private sources = new Map<string, Promise<Source>>();
-	private stills = new Map<string, CanvasSink>();
+	private stills = new Map<string, VideoSampleSink>();
 	private audio: AudioContext | null = null;
 	private run: Run | null = null;
 	private frame = 0;
@@ -213,25 +217,30 @@ export class EditPlayer {
 				this.schedule(run, block.channels, block.sampleRate, at);
 				at += block.channels[0]!.length / block.sampleRate;
 			};
-			for await (const wrapped of new AudioBufferSink(track).buffers(fromUs / 1e6, toUs / 1e6)) {
-				if (run.stopped) return;
-				const { buffer } = wrapped;
-				const bufferUs = wrapped.timestamp * 1e6;
-				const start = Math.max(0, Math.round(((fromUs - bufferUs) / 1e6) * buffer.sampleRate));
-				const end = Math.min(buffer.length, Math.round(((toUs - bufferUs) / 1e6) * buffer.sampleRate));
-				if (end <= start) continue;
-				let channels: Float32Array[] = Array.from({ length: buffer.numberOfChannels }, (_, c) => buffer.getChannelData(c).slice(start, end));
-				const firstBlock = !started;
-				if (firstBlock) {
-					started = true;
-					// The piece's first sound goes exactly where it belongs in the edit; the rest follows on.
-					at = this.clockAt(run, piece.editStartUs + bufferUs + (start / buffer.sampleRate) * 1e6 - piece.fileStartUs);
-					if (run.rate !== 1) stretcher = new Stretcher(channels.length, buffer.sampleRate, run.rate);
+			try {
+				for await (const wrapped of new AudioBufferSink(track).buffers(fromUs / 1e6, toUs / 1e6)) {
+					if (run.stopped) return;
+					const { buffer } = wrapped;
+					const bufferUs = wrapped.timestamp * 1e6;
+					const start = Math.max(0, Math.round(((fromUs - bufferUs) / 1e6) * buffer.sampleRate));
+					const end = Math.min(buffer.length, Math.round(((toUs - bufferUs) / 1e6) * buffer.sampleRate));
+					if (end <= start) continue;
+					let channels: Float32Array[] = Array.from({ length: buffer.numberOfChannels }, (_, c) => buffer.getChannelData(c).slice(start, end));
+					const firstBlock = !started;
+					if (firstBlock) {
+						started = true;
+						// The piece's first sound goes exactly where it belongs in the edit; the rest follows on.
+						at = this.clockAt(run, piece.editStartUs + bufferUs + (start / buffer.sampleRate) * 1e6 - piece.fileStartUs);
+						if (run.rate !== 1) stretcher = new Stretcher(channels.length, buffer.sampleRate, run.rate);
+					}
+					if (stretcher) channels = stretcher.push(channels);
+					send(held, false);
+					held = { channels, sampleRate: buffer.sampleRate, fadeIn: firstBlock };
+					while (!run.stopped && at - audio.currentTime > aheadSeconds) await sleep(100);
 				}
-				if (stretcher) channels = stretcher.push(channels);
-				send(held, false);
-				held = { channels, sampleRate: buffer.sampleRate, fadeIn: firstBlock };
-				while (!run.stopped && at - audio.currentTime > aheadSeconds) await sleep(100);
+			} catch {
+				// A decoder that failed (the browser can reclaim one) loses the rest of this piece's sound, not the edit's.
+				if (run.stopped) return;
 			}
 			if (run.stopped) return;
 			if (stretcher && held) {
@@ -259,45 +268,75 @@ export class EditPlayer {
 		node.onended = () => run.nodes.delete(node);
 	}
 
-	/** Draws each piece's frames as the clock reaches them, opening the next piece while this one plays. */
+	/**
+	 * Draws each piece's frames as the clock reaches them. The next piece starts
+	 * decoding in the last moments of this one; opened any earlier, its idle
+	 * decoder could be reclaimed by the browser. A decoder that fails anyway is
+	 * opened again from where the clock is.
+	 */
 	private async playVideo(run: Run) {
 		const first = pieceAt(this.pieces, run.fromUs);
 		if (first < 0) return;
-		const open = async (piece: Piece, fromEditUs: number) => {
+		const open = async (piece: Piece, fromEditUs: number): Promise<Opened> => {
 			if (!piece.segment) return null;
 			const track = (await this.source(piece.segment.path)).video;
 			if (!track) return null;
 			const fromS = (piece.fileStartUs + Math.max(0, fromEditUs - piece.editStartUs)) / 1e6;
-			const frames = new CanvasSink(track, { poolSize: 3 }).canvases(fromS, (piece.fileStartUs + piece.durationUs) / 1e6);
+			const frames = new VideoSampleSink(track).samples(fromS, (piece.fileStartUs + piece.durationUs) / 1e6);
 			return { frames, first: frames.next() };
 		};
-		let current = open(this.pieces[first]!, run.fromUs);
+		let current: Promise<Opened> = open(this.pieces[first]!, run.fromUs);
 		for (let i = first; i < this.pieces.length; i++) {
 			const piece = this.pieces[i]!;
 			const following = this.pieces[i + 1];
-			const next = following ? open(following, following.editStartUs) : null;
-			const opened = await current;
-			if (opened) {
-				let result = await opened.first;
-				while (!result.done && !run.stopped) {
-					const frame = result.value;
-					const startUs = piece.editStartUs + frame.timestamp * 1e6 - piece.fileStartUs;
-					const endUs = startUs + frame.duration * 1e6;
-					// A frame whose time has already passed is dropped, so the picture catches up with the sound.
-					if (endUs > this.heard(run)) {
-						while (!run.stopped && this.heard(run) < Math.max(startUs, piece.editStartUs)) await nextFrame();
-						if (run.stopped) break;
-						this.draw(frame, piece);
-					}
-					result = await opened.frames.next();
+			const endUs = piece.editStartUs + piece.durationUs;
+			let next: Promise<Opened> | null = null;
+			const openNext = () => {
+				if (!next && following) next = open(following, following.editStartUs);
+			};
+			for (let attempt = 0; ; attempt++) {
+				try {
+					await this.showFrames(run, piece, await current, () => {
+						if (endUs - this.heard(run) < nextAheadUs) openNext();
+					});
+					break;
+				} catch {
+					if (run.stopped || attempt >= 2) break;
+					current = open(piece, Math.max(piece.editStartUs, this.heard(run)));
 				}
-				void opened.frames.return(undefined);
 			}
 			if (run.stopped) {
-				void next?.then((o) => o?.frames.return(undefined));
+				discard(next);
 				return;
 			}
+			openNext();
 			current = next ?? Promise.resolve(null);
+		}
+	}
+
+	/** Shows one piece's frames, each when the clock reaches it; `onFrame` runs after each. */
+	private async showFrames(run: Run, piece: Piece, opened: Opened, onFrame: () => void) {
+		if (!opened) return;
+		let result = await opened.first;
+		try {
+			while (!result.done) {
+				const frame = result.value;
+				const startUs = piece.editStartUs + frame.timestamp * 1e6 - piece.fileStartUs;
+				// A frame whose time has already passed is dropped, so the picture catches up with the sound.
+				if (startUs + frame.duration * 1e6 > this.heard(run)) {
+					while (!run.stopped && this.heard(run) < Math.max(startUs, piece.editStartUs)) {
+						onFrame();
+						await nextFrame();
+					}
+					if (!run.stopped) this.draw(frame, piece);
+				}
+				frame.close();
+				onFrame();
+				if (run.stopped) return;
+				result = await opened.frames.next();
+			}
+		} finally {
+			void opened.frames.return(undefined);
 		}
 	}
 
@@ -309,22 +348,37 @@ export class EditPlayer {
 		const track = (await this.source(piece.segment.path)).video;
 		if (!track || seek !== this.seeks) return;
 		let sink = this.stills.get(piece.segment.path);
-		if (!sink) this.stills.set(piece.segment.path, (sink = new CanvasSink(track)));
-		const frame = await sink.getCanvas((piece.fileStartUs + this.timeUs - piece.editStartUs) / 1e6);
+		if (!sink) this.stills.set(piece.segment.path, (sink = new VideoSampleSink(track)));
+		const frame = await sink.getSample((piece.fileStartUs + this.timeUs - piece.editStartUs) / 1e6);
 		if (frame && seek === this.seeks && !this.playing) this.draw(frame, piece);
+		frame?.close();
 	}
 
-	private draw(frame: WrappedCanvas, piece: Piece) {
+	private draw(frame: VideoSample, piece: Piece) {
 		const { canvas } = this;
-		if (canvas.width !== frame.canvas.width || canvas.height !== frame.canvas.height) {
-			canvas.width = frame.canvas.width;
-			canvas.height = frame.canvas.height;
+		if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
+			canvas.width = frame.displayWidth;
+			canvas.height = frame.displayHeight;
 		}
-		canvas.getContext('2d')!.drawImage(frame.canvas, 0, 0);
+		frame.draw(canvas.getContext('2d')!, 0, 0, canvas.width, canvas.height);
 		// Which moment of which Session is on screen, for anyone checking the picture.
 		canvas.dataset.session = String(piece.session);
 		canvas.dataset.frameUs = String(Math.round(piece.sessionStartUs + frame.timestamp * 1e6 - piece.fileStartUs));
 	}
+}
+
+/** A piece's frames, opened, with the first already on its way; null for a gap or a take with no picture. */
+type Opened = { frames: AsyncGenerator<VideoSample, void, unknown>; first: Promise<IteratorResult<VideoSample, void>> } | null;
+
+/** Closes a piece opened ahead that won't be shown. */
+function discard(opened: Promise<Opened> | null) {
+	void opened
+		?.then(async (o) => {
+			const first = await o?.first;
+			if (first && !first.done) first.value.close();
+			void o?.frames.return(undefined);
+		})
+		.catch(() => {});
 }
 
 function fade(channels: Float32Array[], sampleRate: number, direction: 'in' | 'out') {
