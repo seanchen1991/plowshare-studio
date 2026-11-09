@@ -2,6 +2,7 @@
 // stream is the one a take records, so what the user sees is what they get.
 
 import { audioConstraints, captureConstraints, videoConstraints, type CaptureChoice } from '../media/capture.ts';
+import { exposureOf, quietExposure, watchExposureStep, type Exposure } from './device-checks.ts';
 
 export function openDevices(choice: CaptureChoice): Promise<MediaStream> {
 	return navigator.mediaDevices.getUserMedia(captureConstraints(choice));
@@ -67,4 +68,35 @@ export function watchFrameRate(video: HTMLVideoElement, onRate: (fps: number) =>
 		watching = false;
 		clearInterval(timer);
 	};
+}
+
+/** Samples are taken from a frame this small: plenty to judge brightness, and next to nothing to read. */
+const exposureSample = { width: 64, height: 36 };
+
+/**
+ * Watches the camera picture's brightness about once a second, from a tiny copy
+ * of the preview, and reports when the exposure warning should change. Ignores
+ * the first 2 s, while the camera's auto-exposure settles. Nothing here touches
+ * the recording.
+ */
+export function watchExposure(video: HTMLVideoElement, onExposure: (exposure: Exposure) => void, settleMs = 2000): () => void {
+	const canvas = document.createElement('canvas');
+	canvas.width = exposureSample.width;
+	canvas.height = exposureSample.height;
+	const context = canvas.getContext('2d', { willReadFrequently: true })!;
+	const started = performance.now();
+	let watch = quietExposure;
+
+	const timer = setInterval(() => {
+		if (document.hidden || video.readyState < 2 || performance.now() - started < settleMs) return;
+		context.drawImage(video, 0, 0, canvas.width, canvas.height);
+		const { data } = context.getImageData(0, 0, canvas.width, canvas.height);
+		const histogram = new Uint32Array(256);
+		for (let i = 0; i < data.length; i += 4) histogram[Math.round(0.2126 * data[i]! + 0.7152 * data[i + 1]! + 0.0722 * data[i + 2]!)]!++;
+		const next = watchExposureStep(watch, exposureOf(histogram));
+		if (next.shown !== watch.shown) onExposure(next.shown);
+		watch = next;
+	}, 1000);
+
+	return () => clearInterval(timer);
 }

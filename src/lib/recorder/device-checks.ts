@@ -27,6 +27,64 @@ export function sampleRateWarning(sampleRate: number | undefined): string | null
 	);
 }
 
+/** A camera picture that's too dark or washed out to record, or null when it's fine. */
+export type Exposure = 'dark' | 'washed-out' | null;
+
+/** The share of a brightness histogram (256 bins of luma, 0–255) at or below `max`, or at or above `min`. */
+function shareAtMost(histogram: ArrayLike<number>, total: number, max: number): number {
+	let count = 0;
+	for (let i = 0; i <= max; i++) count += histogram[i]!;
+	return count / total;
+}
+function shareAtLeast(histogram: ArrayLike<number>, total: number, min: number): number {
+	let count = 0;
+	for (let i = min; i < 256; i++) count += histogram[i]!;
+	return count / total;
+}
+
+/**
+ * Whether a picture is too dark or washed out, from the share of nearly black or
+ * nearly white pixels rather than the average: a dark backdrop with a lit face is
+ * fine, a frame that's mostly crushed black or blown white isn't.
+ */
+export function exposureOf(histogram: ArrayLike<number>): Exposure {
+	let total = 0;
+	for (let i = 0; i < 256; i++) total += histogram[i]!;
+	if (total === 0) return null;
+	if (shareAtMost(histogram, total, 20) >= 0.8 || shareAtMost(histogram, total, 45) >= 0.95) return 'dark';
+	if (shareAtLeast(histogram, total, 235) >= 0.5 || shareAtLeast(histogram, total, 200) >= 0.9) return 'washed-out';
+	return null;
+}
+
+const exposureAdvice =
+	'Add light facing you, or set exposure by hand with a camera control app (such as CameraController on a Mac). ' +
+	'Unplugging the camera and plugging it back in sometimes helps.';
+
+export function exposureWarning(exposure: Exposure): string | null {
+	if (exposure === 'dark') return `Your camera picture is very dark. ${exposureAdvice}`;
+	if (exposure === 'washed-out') return `Your camera picture is washed out. ${exposureAdvice}`;
+	return null;
+}
+
+/** What the exposure warning shows, and the run of samples that may change it. */
+export interface ExposureWatch {
+	shown: Exposure;
+	streak: Exposure;
+	count: number;
+}
+
+export const quietExposure: ExposureWatch = { shown: null, streak: null, count: 0 };
+
+/**
+ * The warning after one more sample (about one a second): it appears once the
+ * picture has been out of range for 3 samples in a row, and clears after 2 in range.
+ */
+export function watchExposureStep(watch: ExposureWatch, sample: Exposure): ExposureWatch {
+	const count = sample === watch.streak ? watch.count + 1 : 1;
+	const needed = sample === null ? 2 : 3;
+	return { shown: sample !== watch.shown && count >= needed ? sample : watch.shown, streak: sample, count };
+}
+
 export interface DeviceProblem {
 	title: string;
 	steps: string[];

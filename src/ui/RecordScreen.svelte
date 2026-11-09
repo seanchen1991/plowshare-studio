@@ -3,9 +3,9 @@
 	import { playAlertSound } from '../lib/browser/alert-sound';
 	import type { SupportedBrowser } from '../lib/browser/support';
 	import { audioBitsPerSecond, resolutionNotice, videoBitsPerSecond } from '../lib/media/capture';
-	import { deviceProblem, frameRateWarning, sampleRateWarning, type DeviceProblem } from '../lib/recorder/device-checks';
+	import { deviceProblem, exposureWarning, frameRateWarning, sampleRateWarning, type DeviceProblem, type Exposure } from '../lib/recorder/device-checks';
 	import { findDevice, loadDevicePrefs, micKey, saveDevicePrefs } from '../lib/recorder/device-prefs';
-	import { listDevices, openCamera, openDevices, openMic, watchFrameRate, type DeviceLists } from '../lib/recorder/devices';
+	import { listDevices, openCamera, openDevices, openMic, watchExposure, watchFrameRate, type DeviceLists } from '../lib/recorder/devices';
 	import { meterLevel, type LevelReading } from '../lib/recorder/level-meter';
 	import { startTake, type Pause, type StoppedTake, type Take } from '../lib/recorder/take';
 	import { isOutOfRoom, measureStorage } from '../lib/storage/budget';
@@ -119,6 +119,9 @@
 	let hasCamera = $state(true);
 	let micId = $state<string>();
 	let fps = $state<number | null>(null);
+	// Too dark or washed out, from the preview; never for an audio-only take.
+	let exposure = $state<Exposure>(null);
+	let stopExposure = () => {};
 	let micSampleRate = $state<number>();
 
 	let take: Take | null = null;
@@ -145,7 +148,7 @@
 	const tooLittleRoom = $derived(phase === 'idle' && timeLeft !== null && timeLeft < minimumSecondsToStart);
 	const spaceWarning = $derived(inTake && timeLeft !== null ? warningDue(timeLeft) : null);
 	const warnings = $derived(
-		[fps === null ? null : frameRateWarning(fps), sampleRateWarning(micSampleRate)].filter((w) => w !== null)
+		[fps === null ? null : frameRateWarning(fps), exposureWarning(exposure), sampleRateWarning(micSampleRate)].filter((w) => w !== null)
 	);
 
 	// The camera and mic stay on while the Record screen shows, and through a take.
@@ -238,6 +241,8 @@
 		stream = null;
 		if (preview) preview.srcObject = null;
 		fps = null;
+		stopExposure();
+		exposure = null;
 		micSampleRate = undefined;
 		devicesState = 'off';
 	}
@@ -256,6 +261,9 @@
 		preview!.srcObject = stream;
 		await preview!.play();
 		stopWatching = video ? watchFrameRate(preview!, (rate) => (fps = rate)) : () => {};
+		stopExposure();
+		exposure = null;
+		stopExposure = video ? watchExposure(preview!, (e) => (exposure = e)) : () => {};
 		stopMetering();
 		stopMetering = audio ? meterLevel(audio, (r) => (reading = r)) : () => {};
 	}
