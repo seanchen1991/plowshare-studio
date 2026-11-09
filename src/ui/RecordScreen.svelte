@@ -33,6 +33,7 @@
 		onTakeChanged,
 		onRetry,
 		onEdit,
+		usedIn = [],
 		onRecordPressed,
 		persistence,
 		shows,
@@ -55,6 +56,8 @@
 		onRetry: (session: Session) => void;
 		/** Opens a Ready take in the editor. */
 		onEdit: (session: Session) => void;
+		/** The names of the Projects that use the last take, to warn before deleting it. */
+		usedIn?: string[];
 		/** Record was pressed (the countdown starts): the moment to ask the browser to keep recordings. */
 		onRecordPressed: () => void;
 		persistence: Persistence;
@@ -616,7 +619,7 @@
 				<h2>Last take</h2>
 				<button class="link" onclick={onShowTakes}>All takes</button>
 			</div>
-			<ul><TakeRow session={lastTake} {progress} {persistence} {shows} onChanged={onTakeChanged} onRetry={() => onRetry(lastTake)} onEdit={() => onEdit(lastTake)} /></ul>
+			<ul><TakeRow session={lastTake} {progress} {persistence} {shows} onChanged={onTakeChanged} onRetry={() => onRetry(lastTake)} onEdit={() => onEdit(lastTake)} {usedIn} /></ul>
 		</section>
 	{/if}
 </div>

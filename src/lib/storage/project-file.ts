@@ -42,17 +42,51 @@ export function projectFilePath(projectId: string): string {
 	return `${projectsDir}/${projectId}/project.json`;
 }
 
-/** A new Project holding one Session, named after it, with no Cuts. */
-export function newProject(options: { now: Date; random?: () => number; session: Session }): Project {
-	const { now, random = Math.random, session } = options;
+/**
+ * A new Project of these Sessions in this order, with no Cuts: named after the
+ * Session, or the first of several.
+ */
+export function newProject(options: { now: Date; random?: () => number; sessions: Session[] }): Project {
+	const { now, random = Math.random, sessions } = options;
+	const [first] = sessions;
+	const others = sessions.length - 1;
 	return {
 		version: 1,
 		id: newId('proj', now, random),
-		title: session.title,
+		title: !first ? 'New project' : others === 0 ? first.title : `${first.title} and ${others} more`,
 		createdAt: now.toISOString(),
-		sessions: [{ sessionId: session.id, cuts: [] }],
+		sessions: addSessions([], sessions.map((s) => s.id)),
 		silence: { ...defaultSilence }
 	};
+}
+
+/** Adds Sessions at the end, each with no Cuts; any already in the Project are left where they are. */
+export function addSessions(list: ProjectSession[], sessionIds: string[]): ProjectSession[] {
+	const added = [...list];
+	for (const sessionId of sessionIds) {
+		if (!added.some((s) => s.sessionId === sessionId)) added.push({ sessionId, cuts: [] });
+	}
+	return added;
+}
+
+/** Takes a Session out of the Project, with its Cuts. */
+export function removeSession(list: ProjectSession[], sessionId: string): ProjectSession[] {
+	return list.filter((s) => s.sessionId !== sessionId);
+}
+
+/** Moves the Session at `from` to `to`, shifting the ones between. */
+export function moveSession(list: ProjectSession[], from: number, to: number): ProjectSession[] {
+	if (from < 0 || from >= list.length) return list;
+	const target = Math.min(Math.max(0, to), list.length - 1);
+	if (target === from) return list;
+	const moved = [...list];
+	moved.splice(target, 0, ...moved.splice(from, 1));
+	return moved;
+}
+
+/** The Projects that use a Session. */
+export function projectsUsing(projects: Project[], sessionId: string): Project[] {
+	return projects.filter((p) => p.sessions.some((s) => s.sessionId === sessionId));
 }
 
 /** The newest Project holding just this Session, which Edit on the take opens again rather than making another. */

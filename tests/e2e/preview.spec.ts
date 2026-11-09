@@ -7,16 +7,16 @@
 
 import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page, type TestInfo } from '@playwright/test';
 import { fixtureSpec } from '../fixtures/spec.ts';
-import { glueTakes, opfsFileExists, recordTake, saveOpfsFile } from '../helpers/app.ts';
+import { glueTakes, opfsFileExists, readOpfsJson, recordTake, saveOpfsFile } from '../helpers/app.ts';
 import { detectBeeps } from '../helpers/beeps.ts';
 import { useFixtureMedia } from '../helpers/fake-media.ts';
 import { readFrameCode } from '../helpers/frame-code.ts';
 import { audioStartSeconds, decodeAudio } from '../helpers/media-file.ts';
-import { toEditTime } from '../../src/lib/edit/cuts.ts';
+import { editDurationUs, toEditTime } from '../../src/lib/edit/cuts.ts';
 import type { Cut, Project } from '../../src/lib/storage/project-file.ts';
-import type { Segment } from '../../src/lib/storage/session-file.ts';
+import type { Segment, Session } from '../../src/lib/storage/session-file.ts';
 
 /** Every Web Audio graph also feeds a stream the test can record: whatever reaches the speakers. */
 function tapAudio() {
@@ -67,18 +67,7 @@ test('preview skips the Cuts, with sound and picture in step across every Cut an
 	const session = await glueTakes(page, await recordTake(page, 7), await recordTake(page, 7), gapUs);
 	const [a, b] = session.recordings[0]!.segments as [Segment, Segment];
 
-	// The beeps in each Segment's file, and the frame drawn with each, placed on the take's timeline.
-	const sourceBeeps: { atUs: number; frameCode: number }[] = [];
-	for (const segment of [a, b]) {
-		const file = testInfo.outputPath(`seg-${segment.index}.${segment.path!.split('.').at(-1)}`);
-		await saveOpfsFile(page, segment.path!, file);
-		const audioStart = audioStartSeconds(file);
-		for (const beep of detectBeeps(decodeAudio(file, rate), rate)) {
-			const at = beep.timeSeconds + audioStart;
-			const frameCode = browserName === 'chromium' ? readFrameCode(greyFrameAt(file, at + 0.01)) : -1;
-			sourceBeeps.push({ atUs: segment.startUs + Math.round(at * 1e6), frameCode });
-		}
-	}
+	const sourceBeeps = await beepsInSegments(page, testInfo, browserName, [a, b]);
 	const inA = sourceBeeps.filter((s) => s.atUs < a.durationUs!);
 	const inB = sourceBeeps.filter((s) => s.atUs >= b.startUs);
 	expect(inA.length).toBeGreaterThanOrEqual(6);
@@ -124,6 +113,72 @@ test('preview skips the Cuts, with sound and picture in step across every Cut an
 	await expect(page.getByTestId('timecode')).toContainText(`${format(toEditTime(cuts, cuts[1]!.endUs))} /`);
 	await expect(page.getByTestId('stage')).toHaveAttribute('data-showing', 'segment');
 
+	await checkPreview(page, testInfo, browserName, kept.map((k) => ({ editS: toEditTime(cuts, k.atUs) / 1e6, frameCode: k.frameCode })), editUs, { fast: true });
+});
+
+test('preview plays across Session boundaries in order, skipping Cuts, with sound and picture in step', async ({ page, browserName }, testInfo) => {
+	test.setTimeout(240_000);
+	await page.goto('/');
+	await recordTake(page, 6);
+	await recordTake(page, 6);
+
+	// Both takes in one Project, from Takes: they play in the order listed (newest first).
+	await page.getByRole('tab', { name: 'Takes' }).click();
+	const takes = page.getByRole('region', { name: 'Takes' }).getByTestId('session');
+	await takes.nth(0).getByRole('checkbox').check();
+	await takes.nth(1).getByRole('checkbox').check();
+	await page.getByRole('button', { name: 'Edit together' }).click();
+	await expect(page.getByTestId('project-take')).toHaveCount(2);
+	const projectId = (await page.getByTestId('editor').getAttribute('data-project-id'))!;
+	const project = await readOpfsJson<Project>(page, `projects/${projectId}/project.json`);
+	const sessions = await Promise.all(project.sessions.map((ps) => readOpfsJson<Session>(page, `sessions/${ps.sessionId}/session.json`)));
+
+	// Cuts in both: the end of the first take and the start of the second, so the boundary joins kept
+	// material from each, and one more inside the second. Edges sit halfway between beeps.
+	const between = (beep: { atUs: number }) => beep.atUs + 500_000;
+	const takeBeeps = [];
+	for (const session of sessions) takeBeeps.push(await beepsInSegments(page, testInfo, browserName, session.recordings[0]!.segments));
+	const [first, second] = takeBeeps as [{ atUs: number; frameCode: number }[], { atUs: number; frameCode: number }[]];
+	expect(first.length).toBeGreaterThanOrEqual(5);
+	expect(second.length).toBeGreaterThanOrEqual(5);
+	const durations = sessions.map((s) => s.recordings[0]!.segments[0]!.durationUs!);
+	const manual = (startUs: number, endUs: number): Cut => ({ startUs, endUs, reason: 'manual', accepted: true });
+	const cuts = [[manual(between(first[3]!), durations[0]!)], [manual(0, between(second[0]!)), manual(between(second[2]!), between(second[3]!))]];
+	await writeProject(page, { ...project, sessions: project.sessions.map((ps, i) => ({ ...ps, cuts: cuts[i]! })) });
+	await page.reload();
+	await page.getByRole('tab', { name: 'Edit' }).click();
+	await expect(page.getByTestId('cut')).toHaveCount(3);
+	await expect(page.getByTestId('boundary')).toHaveCount(1);
+	for (const session of sessions) {
+		const path = session.recordings[0]!.segments[0]!.path!;
+		await expect.poll(() => opfsFileExists(page, path.replace(/\.[^.]+$/, '.peaks')), { timeout: 30_000 }).toBe(true);
+	}
+
+	// The kept beeps of each take, at their edit times: the second take's start where the first's edit ends.
+	const firstEditUs = editDurationUs(cuts[0]!, durations[0]!);
+	const editUs = firstEditUs + editDurationUs(cuts[1]!, durations[1]!);
+	await expect(page.getByTestId('timecode')).toContainText(`/ ${format(editUs)}`);
+	const kept = takeBeeps.flatMap((beeps, i) =>
+		beeps
+			.filter((b) => !cuts[i]!.some((c) => b.atUs >= c.startUs && b.atUs < c.endUs))
+			.map((b) => ({ editS: ((i === 0 ? 0 : firstEditUs) + toEditTime(cuts[i]!, b.atUs)) / 1e6, frameCode: b.frameCode }))
+	);
+	await checkPreview(page, testInfo, browserName, kept, editUs);
+});
+
+/**
+ * Records the preview from the start and checks it against the beeps the edit
+ * keeps (their edit times, and the frame recorded with each): the same beeps,
+ * the same spacing, in sync in Chrome, no freezes; with `fast`, again at 2×.
+ */
+async function checkPreview(
+	page: Page,
+	testInfo: TestInfo,
+	browserName: string,
+	beeps: { editS: number; frameCode: number }[],
+	editUs: number,
+	{ fast = false } = {}
+) {
 	// Make the audio graph (Play), then record the preview from the start to the end.
 	await page.getByRole('button', { name: 'Play' }).click();
 	await expect.poll(() => page.evaluate(() => (window as unknown as { audioTaps: Map<unknown, unknown> }).audioTaps.size)).toBe(1);
@@ -134,14 +189,14 @@ test('preview skips the Cuts, with sound and picture in step across every Cut an
 	const allHeard = beepsIn(recording);
 	// Leaving out a beep in the last moment of the edit, which may be clipped as playing stops.
 	const lastS = editUs / 1e6 - 0.15;
-	const expected = kept.map((s) => toEditTime(cuts, s.atUs) / 1e6).filter((s) => s < lastS);
+	const expected = beeps.map((b) => b.editS).filter((s) => s < lastS);
 	const heard = allHeard.filter((h) => h.timeSeconds - allHeard[0]!.timeSeconds < lastS - expected[0]!);
 	const spacingErrorsMs = heard.map((h, i) => Math.round((h.timeSeconds - heard[0]!.timeSeconds - (expected[i]! - expected[0]!)) * 1000));
 	const report: Record<string, unknown> = { heard: heard.length, expected: expected.length, spacingErrorsMs, longestFreezeMs };
 
 	// In Chrome: at each beep heard, the frame on screen is the one recorded with that beep.
 	if (browserName === 'chromium') {
-		const frameErrors = heard.map((h, i) => readFrameCode(greyFrameAt(recording, h.timeSeconds + 0.01)) - kept[i]!.frameCode);
+		const frameErrors = heard.map((h, i) => readFrameCode(greyFrameAt(recording, h.timeSeconds + 0.01)) - beeps[i]!.frameCode);
 		report.frameErrors = frameErrors;
 		report.outputLatency = await page.evaluate(() => {
 			const [context] = (window as unknown as { audioTaps: Map<AudioContext, unknown> }).audioTaps.keys();
@@ -166,19 +221,20 @@ test('preview skips the Cuts, with sound and picture in step across every Cut an
 		expect(Math.max(...steady) - Math.min(...steady)).toBeLessThanOrEqual(1);
 	}
 
+	if (!fast) return;
 	// At 2×: the same beeps, half as far apart, at the same pitch.
 	await page.getByTestId('speed').click();
 	await page.getByTestId('speed').click();
 	await expect(page.getByTestId('speed')).toHaveText('2×');
-	const fast = beepsIn((await recordPreview(page, testInfo.outputPath('preview-2x.webm'), editUs / 2)).file);
-	const fastSpacingErrorsMs = expected.slice(1).map((e, i) => Math.round(((fast[i + 1]?.timeSeconds ?? NaN) - fast[0]!.timeSeconds - (e - expected[0]!) / 2) * 1000));
-	const pitches = fast.map((h) => Math.round(h.frequencyHz));
-	console.log(`Preview at 2× (${browserName}): ${JSON.stringify({ heard: fast.length, fastSpacingErrorsMs, pitches })}`);
-	expect(fast.length).toBeGreaterThanOrEqual(expected.length);
+	const twice = beepsIn((await recordPreview(page, testInfo.outputPath('preview-2x.webm'), editUs / 2)).file);
+	const fastSpacingErrorsMs = expected.slice(1).map((e, i) => Math.round(((twice[i + 1]?.timeSeconds ?? NaN) - twice[0]!.timeSeconds - (e - expected[0]!) / 2) * 1000));
+	const pitches = twice.map((h) => Math.round(h.frequencyHz));
+	console.log(`Preview at 2× (${browserName}): ${JSON.stringify({ heard: twice.length, fastSpacingErrorsMs, pitches })}`);
+	expect(twice.length).toBeGreaterThanOrEqual(expected.length);
 	for (const error of fastSpacingErrorsMs) expect(Math.abs(error)).toBeLessThanOrEqual(40);
 	// The fixture's tones are 1 and 2 kHz; played faster without stretching, they'd be 2 and 4.
 	for (const hz of pitches) expect(Math.min(Math.abs(hz - fixtureSpec.toneHz), Math.abs(hz - fixtureSpec.markerHz))).toBeLessThan(150);
-});
+}
 
 /**
  * Plays the edit from the playhead to the end and records what the preview
@@ -222,6 +278,20 @@ async function recordPreview(page: Page, file: string, playsUs: number): Promise
 	});
 	writeFileSync(file, Buffer.from(base64, 'base64'));
 	return { file, longestFreezeMs };
+}
+
+/** The beeps in Segments' files, placed on their take's timeline, with the frame recorded with each (Chrome only). */
+async function beepsInSegments(page: Page, testInfo: TestInfo, browserName: string, segments: Segment[]) {
+	const beeps: { atUs: number; frameCode: number }[] = [];
+	for (const segment of segments) {
+		const file = testInfo.outputPath(`${segment.path!.replaceAll('/', '-')}`);
+		await saveOpfsFile(page, segment.path!, file);
+		for (const beep of beepsIn(file)) {
+			const frameCode = browserName === 'chromium' ? readFrameCode(greyFrameAt(file, beep.timeSeconds + 0.01)) : -1;
+			beeps.push({ atUs: segment.startUs + Math.round(beep.timeSeconds * 1e6), frameCode });
+		}
+	}
+	return beeps;
 }
 
 /** The beeps in a recording, placed on its timeline (its audio may start after its video). */

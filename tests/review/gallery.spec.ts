@@ -114,6 +114,58 @@ for (const size of widths) {
 			await shot(page, testInfo, 'edit-3-audio-only');
 		});
 
+		test('Projects', async ({ page }, testInfo) => {
+			test.setTimeout(150_000);
+			await page.goto('/');
+			const titles = ['Interview with Sam – take 1', 'Interview with Sam – take 2', 'Intro'];
+			for (const title of titles) {
+				const take = await recordTake(page, 4);
+				await page.evaluate(
+					async ({ id, title }) => {
+						const dir = await (await (await navigator.storage.getDirectory()).getDirectoryHandle('sessions')).getDirectoryHandle(id);
+						const file = await dir.getFileHandle('session.json');
+						const session = JSON.parse(await (await file.getFile()).text());
+						const writable = await file.createWritable();
+						await writable.write(JSON.stringify({ ...session, title }));
+						await writable.close();
+					},
+					{ id: take.id, title }
+				);
+			}
+			await page.reload();
+
+			// Two takes ticked in Takes, ready to edit together.
+			await page.getByRole('tab', { name: 'Takes' }).click();
+			const rows = page.getByRole('region', { name: 'Takes' }).getByTestId('session');
+			await rows.nth(1).getByRole('checkbox').check();
+			await rows.nth(2).getByRole('checkbox').check();
+			await shot(page, testInfo, 'projects-1-takes-selected');
+
+			// The editor with three takes end to end, a Cut in the middle one.
+			await page.getByRole('button', { name: 'Edit together' }).click();
+			await page.getByRole('button', { name: 'Add takes' }).click();
+			await page.getByTestId('take-picker').getByRole('checkbox').first().check();
+			await shot(page, testInfo, 'projects-2-add-takes');
+			await page.getByRole('button', { name: 'Add', exact: true }).click();
+			await expect(page.getByTestId('project-take')).toHaveCount(3);
+			const lane = page.getByTestId('lane');
+			const box = (await lane.boundingBox())!;
+			await page.mouse.move(box.x + box.width * 0.45, box.y + box.height / 2);
+			await page.mouse.down();
+			await page.mouse.move(box.x + box.width * 0.55, box.y + box.height / 2, { steps: 6 });
+			await page.mouse.up();
+			await page.keyboard.press('Delete');
+			await page.waitForTimeout(1500);
+			await shot(page, testInfo, 'projects-3-three-takes');
+
+			// The list of Projects, with a solo one too.
+			await page.getByRole('tab', { name: 'Takes' }).click();
+			await rows.nth(0).getByRole('button', { name: 'Edit' }).click();
+			await page.getByRole('button', { name: 'All projects' }).click();
+			await expect(page.getByTestId('project')).toHaveCount(2);
+			await shot(page, testInfo, 'projects-4-list');
+		});
+
 		test('A take paused', async ({ page }, testInfo) => {
 			test.setTimeout(90_000);
 			await page.goto('/');

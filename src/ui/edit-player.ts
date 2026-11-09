@@ -104,12 +104,15 @@ export class EditPlayer {
 		else this.onChange();
 	}
 
-	/** New pieces after the Cuts change: the playhead stays at the same place in its Session. */
-	setPieces(pieces: Piece[]): void {
+	/**
+	 * New pieces after the edit changes. The playhead moves to `atUs` in the new
+	 * edit, or by default stays at the same place in the same Session (by its place in the Project).
+	 */
+	setPieces(pieces: Piece[], atUs?: number): void {
 		const at = editToSession(this.pieces, this.run ? this.heard(this.run) : this.timeUs);
 		this.pieces = pieces;
 		this.durationUs = planDurationUs(pieces);
-		void this.seek(sessionToEdit(pieces, at.session, at.sessionUs));
+		void this.seek(atUs ?? sessionToEdit(pieces, at.session, at.sessionUs));
 	}
 
 	destroy(): void {

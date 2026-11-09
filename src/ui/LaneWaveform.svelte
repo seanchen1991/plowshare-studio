@@ -31,10 +31,10 @@
 		viewUs: number;
 		/** The accepted Cuts, in timeline order, drawn greyed. */
 		cuts: Range[];
-		/** Each Segment's peaks, by Segment index. */
-		peaks: Map<number, Uint8Array>;
-		/** How many of each Segment's bins are known so far. */
-		known: Map<number, number>;
+		/** Each Segment's peaks, by its file's path. */
+		peaks: Map<string, Uint8Array>;
+		/** How many of each Segment's bins are known so far, by path. */
+		known: Map<string, number>;
 		/** Changes whenever more peaks arrive. */
 		version: number;
 		/** A CSS colour, which may be a custom property. */
@@ -73,8 +73,8 @@
 		// Pixels from the timeline's start, where the view begins.
 		const viewPx = viewStartUs / usPerPx;
 		for (const segment of segments) {
-			const bins = peaks.get(segment.index);
-			const ready = known.get(segment.index) ?? 0;
+			const bins = peaks.get(segment.path);
+			const ready = known.get(segment.path) ?? 0;
 			if (!bins || ready === 0) continue;
 			const startPx = Math.max(segment.startUs / usPerPx, viewPx - barStep);
 			const endPx = Math.min((segment.startUs + segment.durationUs) / usPerPx, viewPx + width);

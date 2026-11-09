@@ -1,21 +1,24 @@
 <script lang="ts">
 	/**
-	 * The editor: the video above the timeline, a toolbar, and the timeline with
-	 * a ruler, a chip row and one lane per Track. Plays the first Track; every
-	 * Track gets a lane, for a host plus up to 3 guests. Zoomed in, the ruler,
-	 * chips and lanes scroll sideways together under the fixed lane headers.
+	 * The editor for one Project: its takes (Sessions) end to end on one
+	 * timeline, the video above it, and a toolbar. The timeline has a row naming
+	 * each take, a ruler, a chip row and one lane per Track. Zoomed in, the rows
+	 * scroll sideways together under the fixed lane headers.
 	 *
-	 * Dragging across the ruler or a lane selects a range to Cut; clicking moves
-	 * the playhead, or restores a Cut when it's on one in a lane. Every change to
-	 * the cut list can be undone, and is saved to the Project file straight away.
+	 * Dragging across the ruler or a lane selects a range to Cut (split at take
+	 * boundaries, since a Cut stays inside its Session); clicking moves the
+	 * playhead, or restores a Cut when it's on one in a lane. Adding, removing,
+	 * reordering takes and every Cut can be undone, and each change is saved to
+	 * the Project file straight away.
 	 *
-	 * The timeline shows the Session as recorded, Cuts included; playing plays the
-	 * edit, skipping them. The playhead is drawn at its place in the Session.
+	 * The timeline shows the takes as recorded, Cuts included; playing plays the
+	 * edit, skipping them. The playhead is drawn at its place on the timeline.
 	 */
 	import { onDestroy, onMount, tick, untrack } from 'svelte';
 	import { peakCount, peaksPerSecond } from '../lib/analysis/peaks';
 	import { loadPeaks } from '../lib/analysis/waveform';
 	import { addCut, canRedo, canUndo, cutAt, newHistory, record, redo, restoreCut, undo, type Range } from '../lib/edit/cuts';
+	import { layOut, layoutDurationUs, sessionAt, splitRange } from '../lib/edit/layout';
 	import { editToSession, planDurationUs, planEdit, sessionToEdit } from '../lib/edit/plan';
 	import {
 		followPlayhead,
@@ -27,40 +30,64 @@
 		zoomStep,
 		type PlacedSegment
 	} from '../lib/edit/timeline';
-	import type { Cut, Project } from '../lib/storage/project-file';
+	import { addSessions, moveSession, removeSession, type Cut, type Project, type ProjectSession } from '../lib/storage/project-file';
 	import { saveProject } from '../lib/storage/projects';
-	import type { Recording, Session } from '../lib/storage/session-file';
+	import type { Session } from '../lib/storage/session-file';
 	import Button from './Button.svelte';
+	import Dialog from './Dialog.svelte';
 	import LaneWaveform, { barStep } from './LaneWaveform.svelte';
 	import { formatDuration, formatTimecode } from './format';
 	import { EditPlayer, type Showing } from './edit-player';
 
 	let {
 		project,
-		session,
-		onProjectChange
-	}: { project: Project; session: Session; onProjectChange: (project: Project) => void } = $props();
+		library,
+		onProjectChange,
+		onClose
+	}: {
+		project: Project;
+		/** Every Ready take, to find the Project's in and to add from. */
+		library: Session[];
+		onProjectChange: (project: Project) => void;
+		/** Back to the list of Projects. */
+		onClose: () => void;
+	} = $props();
 
 	interface Track {
-		recording: Recording;
+		/** Every take's Segments for this Track, placed on the timeline. */
 		segments: PlacedSegment[];
 		color: string;
 		name: string;
 		role: string;
 	}
 
-	// A Ready take's Segments don't change, so the editor keeps the take as it opened (it's remounted for another).
-	const opened = untrack(() => session);
-	const tracks: Track[] = opened.recordings.map((recording, i) => ({
-		recording,
-		segments: placedSegments(recording.segments),
-		color: `var(--track-${(i % 4) + 1})`,
-		name: recording.participant.role === 'host' ? 'You' : `Guest ${i}`,
-		role: recording.participant.role === 'host' ? 'Host' : 'Guest'
-	}));
-	const durationUs = sessionDurationUs(opened);
-	const lead = tracks[0]!;
-	const video = lead.recording.video;
+	// The Project's takes and Cuts; undo steps back through them. Its present is the Project as it is now.
+	let history = $state.raw(newHistory<ProjectSession[]>(untrack(() => project.sessions)));
+	let title = $state(untrack(() => project.title));
+	// The takes still in the library, in order; one deleted elsewhere drops out.
+	const entries = $derived(
+		history.present.flatMap((ps) => {
+			const session = library.find((s) => s.id === ps.sessionId);
+			return session ? [{ ps, session, durationUs: sessionDurationUs(session) }] : [];
+		})
+	);
+	const layout = $derived(layOut(entries.map((e) => e.durationUs)));
+	const durationUs = $derived(layoutDurationUs(layout));
+	// One lane per Track position: the host first, then guests, across all takes.
+	const tracks = $derived<Track[]>(
+		Array.from({ length: Math.max(0, ...entries.map((e) => e.session.recordings.length)) }, (_, t) => {
+			const first = entries.find((e) => e.session.recordings[t])?.session.recordings[t];
+			const host = first?.participant.role === 'host';
+			return {
+				segments: entries.flatMap((e, i) =>
+					placedSegments(e.session.recordings[t]?.segments ?? []).map((s) => ({ ...s, startUs: s.startUs + layout[i]!.offsetUs }))
+				),
+				color: `var(--track-${(t % 4) + 1})`,
+				name: host ? 'You' : `Guest ${t}`,
+				role: host ? 'Host' : 'Guest'
+			};
+		})
+	);
 
 	let screen = $state<HTMLCanvasElement>();
 	let player: EditPlayer | undefined;
@@ -70,34 +97,54 @@
 	let showing = $state<Showing>('gap');
 	let rate = $state(1);
 
-	// The cut list's history; its present is the Session's Cuts as they are now.
-	let history = $state.raw(newHistory<Cut[]>(untrack(() => project.sessions.find((s) => s.sessionId === opened.id)?.cuts ?? [])));
-	const cuts = $derived(history.present);
-	const acceptedCuts = $derived(cuts.filter((c) => c.accepted));
+	// Accepted Cuts on the timeline, each with the take it belongs to.
+	const acceptedCuts = $derived(
+		entries.flatMap((e, i) =>
+			e.ps.cuts.filter((c) => c.accepted).map((cut) => ({ cut, sessionId: e.ps.sessionId, startUs: cut.startUs + layout[i]!.offsetUs, endUs: cut.endUs + layout[i]!.offsetUs }))
+		)
+	);
 	let selection = $state<Range | null>(null);
 	/** Where Split started a Cut, until it's pressed again. */
 	let splitFromUs = $state<number | null>(null);
 	let saveFailed = $state(false);
 
-	// What plays: the Kept ranges, in order. The playhead's place in the Session follows from it.
-	const pieces = $derived(planEdit([{ segments: lead.segments, durationUs, cuts }]));
+	// What plays: each take's Kept ranges, in order. The playhead's place on the timeline follows from it.
+	const pieces = $derived(
+		planEdit(entries.map((e) => ({ segments: placedSegments(e.session.recordings[0]?.segments ?? []), durationUs: e.durationUs, cuts: e.ps.cuts })))
+	);
 	const editLengthUs = $derived(planDurationUs(pieces));
-	const timeUs = $derived(editToSession(pieces, editUs).sessionUs);
+	const place = $derived(editToSession(pieces, editUs));
+	const timeUs = $derived((layout[place.session]?.offsetUs ?? 0) + place.sessionUs);
+	const current = $derived(entries[place.session]);
+	// The take the playhead is in and the moment in it, kept by id so it survives reordering.
+	let lastPlace = { sessionId: '', sessionUs: 0 };
 	$effect(() => {
 		const next = pieces;
-		untrack(() => player?.setPieces(next));
+		untrack(() => {
+			const index = entries.findIndex((e) => e.ps.sessionId === lastPlace.sessionId);
+			player?.setPieces(next, index >= 0 ? sessionToEdit(next, index, lastPlace.sessionUs) : 0);
+		});
 	});
+
+	// The picture's shape, and whether the take at the playhead has one.
+	const firstVideo = $derived(entries.find((e) => e.session.recordings[0]?.video)?.session.recordings[0]?.video ?? null);
+	const video = $derived(current ? current.session.recordings[0]?.video ?? null : firstVideo);
 
 	/** Skip back and forward this far. */
 	const skipUs = 5_000_000;
 	/** Speed steps through these, then back to the first. */
 	const speeds = [1, 1.5, 2];
 
-	// Peaks per Track, by Segment index; `version` changes as they arrive.
-	const peaks = tracks.map(() => new Map<number, Uint8Array>());
-	const known = tracks.map(() => new Map<number, number>());
+	// Peaks by Segment file; `version` changes as they arrive.
+	const peaks = new Map<string, Uint8Array>();
+	const known = new Map<string, number>();
 	let version = $state(0);
 	const loading = new AbortController();
+	let peaksLoading = false;
+	$effect(() => {
+		void tracks;
+		untrack(() => void loadMissingPeaks());
+	});
 
 	// Zoom is how many view widths the whole timeline spans: 1 fits it all.
 	let scroller = $state<HTMLElement>();
@@ -120,13 +167,14 @@
 			playing = player!.playing;
 			showing = player!.showing;
 			rate = player!.rate;
+			const at = editToSession(pieces, editUs);
+			lastPlace = { sessionId: entries[at.session]?.ps.sessionId ?? '', sessionUs: at.sessionUs };
 			if (playing && usPerPx > 0) {
 				const to = followPlayhead(before / usPerPx, timeUs / usPerPx, scrollPx, viewWidth);
 				if (to !== null) scrollTo(to);
 			}
 		});
 		void player.seek(0);
-		void loadAllPeaks();
 		// Pinching a trackpad arrives as a wheel event with Ctrl held; it needs to be cancelable.
 		scroller!.addEventListener('wheel', onwheel, { passive: false });
 	});
@@ -137,28 +185,30 @@
 		scroller?.removeEventListener('wheel', onwheel);
 	});
 
-	/** One Segment at a time, Track by Track, so long takes don't decode in parallel. */
-	async function loadAllPeaks() {
-		for (const [t, track] of tracks.entries()) {
-			for (const segment of track.segments) {
-				const bins = new Uint8Array(peakCount(segment.durationUs));
-				peaks[t]!.set(segment.index, bins);
-				try {
-					await loadPeaks(
-						segment,
-						(from, values) => {
-							bins.set(values.subarray(0, bins.length - from), from);
-							known[t]!.set(segment.index, Math.max(known[t]!.get(segment.index) ?? 0, from + values.length));
-							version++;
-						},
-						loading.signal
-					);
-				} catch {
-					// A Segment whose audio can't be read keeps an empty lane.
-				}
-				if (loading.signal.aborted) return;
+	/** Every Segment's peaks not asked for yet, one at a time, so long takes don't decode in parallel. */
+	async function loadMissingPeaks() {
+		if (peaksLoading) return;
+		peaksLoading = true;
+		for (;;) {
+			const segment = tracks.flatMap((t) => t.segments).find((s) => !peaks.has(s.path));
+			if (!segment || loading.signal.aborted) break;
+			const bins = new Uint8Array(peakCount(segment.durationUs));
+			peaks.set(segment.path, bins);
+			try {
+				await loadPeaks(
+					segment,
+					(from, values) => {
+						bins.set(values.subarray(0, bins.length - from), from);
+						known.set(segment.path, Math.max(known.get(segment.path) ?? 0, from + values.length));
+						version++;
+					},
+					loading.signal
+				);
+			} catch {
+				// A Segment whose audio can't be read keeps an empty lane.
 			}
 		}
+		peaksLoading = false;
 	}
 
 	function toggle() {
@@ -169,7 +219,8 @@
 	function skip(direction: 1 | -1) {
 		// In edit time: 5 s of what you hear.
 		const to = Math.min(Math.max(0, editUs + direction * skipUs), editLengthUs);
-		reveal(editToSession(pieces, to).sessionUs);
+		const at = editToSession(pieces, to);
+		reveal((layout[at.session]?.offsetUs ?? 0) + at.sessionUs);
 		void player?.seek(to);
 	}
 
@@ -216,7 +267,7 @@
 
 	/** Shortcuts, except while typing in a field. Space always plays and pauses, even with a button focused. */
 	function typing(event: KeyboardEvent) {
-		return (event.target as HTMLElement).closest('input, select, textarea, [contenteditable]') !== null;
+		return (event.target as HTMLElement).closest('input, select, textarea, [contenteditable], dialog') !== null;
 	}
 
 	function onkeydown(event: KeyboardEvent) {
@@ -279,17 +330,14 @@
 		if (event.key === ' ' && !typing(event)) event.preventDefault();
 	}
 
-	/** Changes the cut list: it can be undone, and is saved. */
-	function commit(next: Cut[]) {
+	/** Changes the Project's takes or Cuts: it can be undone, and is saved. */
+	function commit(next: ProjectSession[]) {
 		history = record(history, next);
 		save();
 	}
 
 	function save() {
-		const next: Project = {
-			...project,
-			sessions: project.sessions.map((s) => (s.sessionId === opened.id ? { ...s, cuts: history.present } : s))
-		};
+		const next: Project = { ...project, title, sessions: history.present };
 		onProjectChange(next);
 		saveProject(next).then(
 			() => (saveFailed = false),
@@ -311,9 +359,28 @@
 		save();
 	}
 
+	/** A new cut list for one take. */
+	function withCuts(sessionId: string, change: (cuts: Cut[]) => Cut[]): ProjectSession[] {
+		return history.present.map((ps) => (ps.sessionId === sessionId ? { ...ps, cuts: change(ps.cuts) } : ps));
+	}
+
+	/** Cuts a range of the timeline: one Cut in each take it covers. */
+	function cutRange(range: Range) {
+		let next = history.present;
+		for (const part of splitRange(layout, range)) {
+			const entry = entries[part.index]!;
+			next = next.map((ps) =>
+				ps.sessionId === entry.ps.sessionId
+					? { ...ps, cuts: addCut(ps.cuts, { startUs: part.startUs, endUs: part.endUs, reason: 'manual', accepted: true }, entry.durationUs) }
+					: ps
+			);
+		}
+		if (next !== history.present) commit(next);
+	}
+
 	function cutSelection() {
 		if (!selection) return;
-		commit(addCut(cuts, { ...selection, reason: 'manual', accepted: true }, durationUs));
+		cutRange(selection);
 		selection = null;
 	}
 
@@ -323,7 +390,7 @@
 			splitFromUs = timeUs;
 			return;
 		}
-		commit(addCut(cuts, { startUs: splitFromUs, endUs: timeUs, reason: 'manual', accepted: true }, durationUs));
+		cutRange({ startUs: Math.min(splitFromUs, timeUs), endUs: Math.max(splitFromUs, timeUs) });
 		splitFromUs = null;
 	}
 
@@ -358,22 +425,88 @@
 		const { atUs, dragging, restores } = press;
 		press = null;
 		if (dragging && selection) {
-			seekSession(selection.startUs);
+			seekTimeline(selection.startUs);
 			return;
 		}
 		selection = null;
-		const cut = restores ? cutAt(cuts, atUs) : null;
-		if (cut) commit(restoreCut(cuts, cut));
-		else seekSession(atUs);
+		const at = sessionAt(layout, atUs);
+		const entry = entries[at.index];
+		const cut = restores && entry ? cutAt(entry.ps.cuts, at.localUs) : null;
+		if (cut && entry) commit(withCuts(entry.ps.sessionId, (cuts) => restoreCut(cuts, cut)));
+		else seekTimeline(atUs);
 	}
 
-	/** Moves the playhead to a place in the Session; inside a Cut, it lands just after it. */
-	function seekSession(us: number) {
-		void player?.seek(sessionToEdit(pieces, 0, us));
+	/** Moves the playhead to a place on the timeline; inside a Cut, it lands just after it. */
+	function seekTimeline(us: number) {
+		const at = sessionAt(layout, us);
+		if (at.index >= 0) void player?.seek(sessionToEdit(pieces, at.index, at.localUs));
+	}
+
+	// The takes in the Project: add, remove and reorder.
+	let picker: Dialog;
+	let picked = $state<string[]>([]);
+	const addable = $derived(library.filter((s) => !history.present.some((ps) => ps.sessionId === s.id)));
+	let dragging = $state<number | null>(null);
+
+	function openPicker() {
+		picked = [];
+		picker.open();
+	}
+
+	function addPicked(event: SubmitEvent) {
+		if ((event.submitter as HTMLButtonElement | null)?.value !== 'add' || picked.length === 0) return;
+		// In the order they're listed, not the order they were ticked.
+		commit(addSessions(history.present, addable.filter((s) => picked.includes(s.id)).map((s) => s.id)));
+	}
+
+	function moveTake(sessionId: string, to: number) {
+		commit(moveSession(history.present, history.present.findIndex((ps) => ps.sessionId === sessionId), to));
+	}
+
+	// Renaming the Project, in the header.
+	let renaming = $state(false);
+	let titleInput = $state<HTMLInputElement>();
+
+	async function startRename() {
+		renaming = true;
+		await tick();
+		titleInput?.select();
+	}
+
+	function finishRename(keep: boolean) {
+		if (!renaming) return;
+		renaming = false;
+		const next = titleInput?.value.trim() ?? '';
+		if (keep && next && next !== title) {
+			title = next;
+			save();
+		}
 	}
 </script>
 
 <div class="editor" data-testid="editor" data-project-id={project.id}>
+	<header class="project-bar">
+		<Button onclick={onClose} aria-label="All projects">
+			<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3.5L5.5 8l4.5 4.5" /></svg>Projects
+		</Button>
+		{#if renaming}
+			<input
+				bind:this={titleInput}
+				class="title-input"
+				value={title}
+				aria-label="Project name"
+				maxlength="200"
+				onkeydown={(e) => {
+					if (e.key === 'Enter') finishRename(true);
+					if (e.key === 'Escape') finishRename(false);
+				}}
+				onblur={() => finishRename(true)}
+			/>
+		{:else}
+			<button class="project-title" type="button" onclick={startRename} title="Rename" data-testid="project-title">{title}</button>
+		{/if}
+	</header>
+
 	<div
 		class="stage"
 		style:aspect-ratio={video ? `${video.width} / ${video.height}` : undefined}
@@ -396,7 +529,9 @@
 				5<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M12.8 9.5a5 5 0 1 1-.9-4.6" /><path d="M12.5 1.8v3.4H9.1" /></svg>
 			</Button>
 			<span class="timecode" data-testid="timecode">{formatTimecode(editUs)} <span class="total">/ {formatTimecode(editLengthUs)}</span></span>
-			<span class="take-time" data-testid="take-time" title="Where the playhead is in the take, Cuts included">Take {formatTimecode(timeUs)}</span>
+			<span class="take-time" data-testid="take-time" title="Where the playhead is in the take, Cuts included"
+				>Take {entries.length > 1 ? `${place.session + 1} · ` : ''}{formatTimecode(place.sessionUs)}</span
+			>
 		</div>
 		<div class="group">
 			<Button onclick={split} aria-pressed={splitFromUs !== null} data-testid="split">{splitFromUs === null ? 'Split' : 'End cut'}</Button>
@@ -421,15 +556,73 @@
 		</div>
 	</div>
 
+	<ol class="project-takes" data-testid="project-takes" aria-label="Takes in this project">
+		{#each entries as entry, i (entry.ps.sessionId)}
+			<li
+				class="project-take"
+				class:dragging={dragging === i}
+				data-testid="project-take"
+				data-session-id={entry.ps.sessionId}
+				draggable="true"
+				ondragstart={(e) => {
+					dragging = i;
+					e.dataTransfer?.setData('text/plain', entry.ps.sessionId);
+				}}
+				ondragover={(e) => e.preventDefault()}
+				ondrop={(e) => {
+					e.preventDefault();
+					const from = dragging === null ? null : entries[dragging];
+					if (from && from !== entry) moveTake(from.ps.sessionId, history.present.findIndex((ps) => ps.sessionId === entry.ps.sessionId));
+					dragging = null;
+				}}
+				ondragend={() => (dragging = null)}
+			>
+				<span class="take-number figures">{i + 1}</span>
+				<span class="take-name">{entry.session.title}</span>
+				<span class="take-length figures">{formatDuration(entry.durationUs)}</span>
+				<span class="take-actions">
+					<button
+						class="icon"
+						type="button"
+						aria-label="Move “{entry.session.title}” earlier"
+						disabled={i === 0}
+						onclick={() => moveTake(entry.ps.sessionId, history.present.findIndex((ps) => ps.sessionId === entries[i - 1]!.ps.sessionId))}
+						><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3.5L5.5 8l4.5 4.5" /></svg></button
+					>
+					<button
+						class="icon"
+						type="button"
+						aria-label="Move “{entry.session.title}” later"
+						disabled={i === entries.length - 1}
+						onclick={() => moveTake(entry.ps.sessionId, history.present.findIndex((ps) => ps.sessionId === entries[i + 1]!.ps.sessionId))}
+						><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3.5L10.5 8 6 12.5" /></svg></button
+					>
+					<button
+						class="icon"
+						type="button"
+						aria-label="Remove “{entry.session.title}” from this project"
+						onclick={() => commit(removeSession(history.present, entry.ps.sessionId))}
+						><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" /></svg></button
+					>
+				</span>
+			</li>
+		{/each}
+		<li><Button onclick={openPicker}>Add takes</Button></li>
+	</ol>
+	{#if entries.length === 0}
+		<p class="no-takes" data-testid="no-takes">This project has no takes. Add takes to start editing it.</p>
+	{/if}
+
 	{#if saveFailed}
 		<p class="save-failed" role="alert">Your latest change couldn't be saved. It will be saved with the next one, if there's room.</p>
 	{/if}
 
 	<div class="timeline" data-testid="timeline" data-zoom={zoom} style:--view-width="{viewWidth}px">
 		<div class="headers">
+			<div class="header-cell takes-row"></div>
 			<div class="header-cell ruler-row"></div>
 			<div class="header-cell chips-row"></div>
-			{#each tracks as track (track.recording.id)}
+			{#each tracks as track, t (t)}
 				<div class="lane-header" data-testid="lane-header">
 					<span class="swatch" style:background={track.color}></span>
 					<span class="who">
@@ -448,7 +641,10 @@
 		>
 			<div class="content" style:width={zoom > 1 ? `${contentWidth}px` : '100%'}>
 				<div class="playhead" data-testid="playhead" style:--at={fraction(timeUs)}></div>
-				{#each acceptedCuts as cut (cut.startUs)}
+				{#each layout.slice(1) as placed (placed.offsetUs)}
+					<div class="boundary" data-testid="boundary" style:--at={fraction(placed.offsetUs)}></div>
+				{/each}
+				{#each acceptedCuts as cut (`${cut.sessionId}:${cut.startUs}`)}
 					<div
 						class="band cut"
 						data-testid="cut"
@@ -464,6 +660,13 @@
 				{#if splitFromUs !== null}
 					<div class="split-from" data-testid="split-from" style:--at={fraction(splitFromUs)}></div>
 				{/if}
+				<div class="takes-row" data-testid="takes-row">
+					{#each entries as entry, i (entry.ps.sessionId)}
+						<span class="take-label" style:--from={fraction(layout[i]!.offsetUs)} style:--to={fraction(layout[i]!.offsetUs + layout[i]!.durationUs)}
+							>{i + 1} · {entry.session.title}</span
+						>
+					{/each}
+				</div>
 				<div
 					class="ruler ruler-row"
 					data-testid="ruler"
@@ -483,24 +686,45 @@
 					{/each}
 				</div>
 				<div class="chips chips-row" data-testid="chips"></div>
-				{#each tracks as track, t (track.recording.id)}
+				{#each tracks as track, t (t)}
 					<!-- svelte-ignore a11y_no_static_element_interactions -->
 					<div
 						class="lane"
 						data-testid="lane"
-						data-recording-id={track.recording.id}
 						onpointerdown={pressed(true)}
 						onpointermove={moved}
 						onpointerup={released}
 						onpointercancel={() => (press = null)}
 					>
-						<LaneWaveform segments={track.segments} {viewStartUs} {viewUs} cuts={acceptedCuts} peaks={peaks[t]!} known={known[t]!} {version} color={track.color} />
+						<LaneWaveform segments={track.segments} {viewStartUs} {viewUs} cuts={acceptedCuts} {peaks} {known} {version} color={track.color} />
 					</div>
 				{/each}
 			</div>
 		</div>
 	</div>
 </div>
+
+<Dialog bind:this={picker} title="Add takes" onsubmit={addPicked}>
+	{#if addable.length === 0}
+		<p>Every Ready take is already in this project.</p>
+	{:else}
+		<ul class="pick" data-testid="take-picker">
+			{#each addable as take (take.id)}
+				<li>
+					<label>
+						<input type="checkbox" value={take.id} bind:group={picked} />
+						<span class="take-name">{take.title}</span>
+						<span class="take-length figures">{formatDuration(sessionDurationUs(take))}</span>
+					</label>
+				</li>
+			{/each}
+		</ul>
+	{/if}
+	{#snippet actions()}
+		<Button type="submit" value="cancel">Cancel</Button>
+		<Button type="submit" value="add" variant="primary" disabled={picked.length === 0}>Add</Button>
+	{/snippet}
+</Dialog>
 
 <svelte:window {onkeydown} {onkeyup} />
 
@@ -511,6 +735,139 @@
 		gap: 16px;
 		max-width: 1200px;
 		margin: -8px auto 0;
+	}
+	.project-bar {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		min-width: 0;
+	}
+	.project-title,
+	.title-input {
+		min-width: 0;
+		padding: 2px 6px;
+		border: 1px solid transparent;
+		border-radius: var(--radius-button);
+		background: none;
+		font: inherit;
+		font-size: 16px;
+		font-weight: 600;
+		color: inherit;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.project-title {
+		cursor: text;
+	}
+	.project-title:hover {
+		border-color: var(--line);
+	}
+	.title-input {
+		flex: 1;
+		max-width: 480px;
+		border-color: var(--line);
+	}
+	.project-bar svg,
+	.project-takes svg {
+		width: 14px;
+		height: 14px;
+		fill: none;
+		stroke: currentColor;
+		stroke-width: 1.5;
+		stroke-linecap: round;
+		stroke-linejoin: round;
+	}
+	.project-takes {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 8px;
+		margin: 0;
+		padding: 0;
+		list-style: none;
+	}
+	.project-take {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		max-width: 100%;
+		height: 32px;
+		padding: 0 4px 0 10px;
+		border: 1px solid var(--line);
+		border-radius: var(--radius-button);
+		background: var(--soft);
+		font-size: var(--text-small);
+		cursor: grab;
+	}
+	.project-take.dragging {
+		opacity: 0.5;
+	}
+	.take-number {
+		color: var(--muted);
+	}
+	.take-name {
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.take-length {
+		color: var(--muted);
+	}
+	.take-actions {
+		display: flex;
+	}
+	.icon {
+		display: grid;
+		place-items: center;
+		width: 24px;
+		height: 24px;
+		padding: 0;
+		border: 0;
+		border-radius: var(--radius-button);
+		background: none;
+		color: var(--muted);
+		cursor: pointer;
+	}
+	.icon:hover:not(:disabled) {
+		background: var(--line);
+		color: var(--ink);
+	}
+	.icon:disabled {
+		opacity: 0.35;
+		cursor: default;
+	}
+	.no-takes {
+		margin: 0;
+		padding: 24px 16px;
+		border: 1px dashed var(--line);
+		border-radius: var(--radius-panel);
+		color: var(--muted);
+		text-align: center;
+	}
+	.pick {
+		display: grid;
+		gap: 2px;
+		max-height: 50vh;
+		margin: 0 0 8px;
+		padding: 0;
+		overflow-y: auto;
+		list-style: none;
+	}
+	.pick label {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 6px 4px;
+		border-radius: var(--radius-button);
+		cursor: pointer;
+	}
+	.pick label:hover {
+		background: var(--soft);
+	}
+	.pick .take-name {
+		flex: 1;
 	}
 	.stage {
 		position: relative;
@@ -603,10 +960,39 @@
 	.content {
 		position: relative;
 	}
+	.takes-row,
 	.ruler-row,
 	.chips-row {
 		height: 24px;
 		border-bottom: 1px solid var(--line);
+	}
+	.takes-row {
+		position: relative;
+		overflow: hidden;
+	}
+	.take-label {
+		position: absolute;
+		top: 0;
+		bottom: 0;
+		left: calc(100% * var(--from));
+		width: calc(100% * (var(--to) - var(--from)));
+		padding: 4px 8px 0;
+		overflow: hidden;
+		color: var(--muted);
+		font-size: var(--text-tiny);
+		font-weight: 600;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.boundary {
+		position: absolute;
+		top: 0;
+		bottom: 0;
+		left: calc(100% * var(--at));
+		width: 2px;
+		margin-left: -1px;
+		background: var(--cut-edge);
+		pointer-events: none;
 	}
 	.ruler {
 		position: relative;
@@ -665,7 +1051,7 @@
 	/* Cuts and the selection run through every lane, below the ruler and chips. */
 	.band {
 		position: absolute;
-		top: 48px;
+		top: 72px;
 		bottom: 0;
 		left: calc(100% * var(--from));
 		width: calc(100% * (var(--to) - var(--from)));
@@ -681,7 +1067,7 @@
 	}
 	.split-from {
 		position: absolute;
-		top: 24px;
+		top: 48px;
 		bottom: 0;
 		left: calc(100% * var(--at));
 		border-left: 1px dashed var(--select-edge);

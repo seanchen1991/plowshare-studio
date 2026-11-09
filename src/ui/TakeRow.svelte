@@ -5,6 +5,7 @@
 	import { downloadName, extensionOf } from '../lib/storage/download-name';
 	import { warnNotBackedUp, type Persistence } from '../lib/storage/persistence';
 	import { deleteSession, finishedBytes, markDownloaded, moveSession, renameSession } from '../lib/storage/library';
+	import { removeSessionFromProjects } from '../lib/storage/projects';
 	import { readFile } from '../lib/storage/opfs';
 	import {
 		canDelete,
@@ -32,6 +33,9 @@
 		onRecover,
 		onRetry,
 		onEdit,
+		selected = false,
+		onSelect,
+		usedIn = [],
 		onChanged,
 		persistence,
 		shows,
@@ -43,6 +47,11 @@
 		onRetry?: () => void;
 		/** Opens the take in the editor. */
 		onEdit?: () => void;
+		/** Ticked to edit together with other takes; the box shows only for a Ready take. */
+		selected?: boolean;
+		onSelect?: (selected: boolean) => void;
+		/** The names of the Projects that use this take. */
+		usedIn?: string[];
 		onChanged: () => void;
 		persistence: Persistence;
 		shows: Show[];
@@ -134,6 +143,7 @@
 	async function remove() {
 		try {
 			await deleteSession(session.id);
+			await removeSessionFromProjects(session.id);
 		} catch (e) {
 			problem = `Couldn't delete this take: ${e instanceof Error ? e.message : String(e)}.`;
 		}
@@ -146,7 +156,16 @@
 </script>
 
 <li data-testid="session" data-session-id={session.id} data-state={takeState} data-backed-up={backedUp}>
-	<div class="what">
+	<div class="what" class:selectable={onSelect && takeState === 'ready'}>
+		{#if onSelect && takeState === 'ready'}
+			<input
+				class="select"
+				type="checkbox"
+				checked={selected}
+				aria-label="Select “{session.title}”"
+				onchange={(e) => onSelect((e.currentTarget as HTMLInputElement).checked)}
+			/>
+		{/if}
 		{#if renaming}
 			<input
 				bind:this={titleInput}
@@ -261,6 +280,12 @@
 				This removes the recording from this computer for good.
 				{#if !backedUp}<strong>It hasn't been downloaded</strong>, so there is no other copy.{/if}
 			</p>
+			{#if usedIn.length > 0}
+				<p data-testid="used-in">
+					{usedIn.length === 1 ? `It's used in the project “${usedIn[0]}”` : `It's used in ${usedIn.length} projects: ${usedIn.map((t) => `“${t}”`).join(', ')}`}.
+					Deleting it takes it out of {usedIn.length === 1 ? 'that project' : 'them'}, with its Cuts.
+				</p>
+			{/if}
 			<div class="dialog-actions">
 				<Button type="submit" value="cancel" autofocus>Cancel</Button>
 				<button type="submit" class="delete" value="delete" onclick={remove}>Delete</button>
@@ -280,6 +305,18 @@
 	.what {
 		display: grid;
 		min-width: 0;
+	}
+	/* A Ready take's tick box sits to the left of its name and details. */
+	.what.selectable {
+		grid-template-columns: auto minmax(0, 1fr);
+		column-gap: 10px;
+	}
+	.what.selectable > :not(.select) {
+		grid-column: 2;
+	}
+	.select {
+		grid-row: span 2;
+		margin: 0;
 	}
 	.title {
 		font-weight: 600;

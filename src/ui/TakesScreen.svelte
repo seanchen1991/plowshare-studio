@@ -1,7 +1,8 @@
 <script lang="ts">
 	import type { SupportedBrowser } from '../lib/browser/support';
 	import { persistenceFixSteps, type Persistence } from '../lib/storage/persistence';
-	import type { Session } from '../lib/storage/session-file';
+	import { projectsUsing, type Project } from '../lib/storage/project-file';
+	import { sessionState, type Session } from '../lib/storage/session-file';
 	import { showOf, type Show } from '../lib/storage/show-file';
 	import { createShow, deleteShow, renameShow } from '../lib/storage/shows';
 	import type { BackupStatus } from '../lib/storage/backup';
@@ -19,6 +20,8 @@
 		onRecover,
 		onRetry,
 		onEdit,
+		onEditTogether,
+		projects,
 		onChanged,
 		persistence,
 		browser,
@@ -39,6 +42,10 @@
 		onRetry: (session: Session) => void;
 		/** Opens a Ready take in the editor. */
 		onEdit: (session: Session) => void;
+		/** Opens several Ready takes in a new Project, in the order given. */
+		onEditTogether: (sessions: Session[]) => void;
+		/** Every Project, to warn before deleting a take one uses. */
+		projects: Project[];
 		onChanged: () => void;
 		shows: Show[];
 		/** A Show was created, renamed or deleted. */
@@ -62,6 +69,14 @@
 		shownFilter === allTakes ? sessions : sessions.filter((s) => (showOf(s.showId, shows)?.id ?? '') === shownFilter)
 	);
 	const inFilterShow = $derived(filterShow ? sessions.filter((s) => s.showId === filterShow.id).length : 0);
+
+	// Ready takes ticked to edit together, in the order they're listed.
+	let selected = $state<string[]>([]);
+	const chosen = $derived(listed.filter((s) => selected.includes(s.id) && sessionState(s) === 'ready'));
+
+	function toggle(session: Session, on: boolean) {
+		selected = on ? [...selected, session.id] : selected.filter((id) => id !== session.id);
+	}
 
 	let showNameDialog!: ShowNameDialog;
 	let confirmDeleteShow!: Dialog;
@@ -141,12 +156,32 @@
 			>
 		{/if}
 	</div>
+	{#if chosen.length > 0}
+		<div class="chosen" role="status" data-testid="chosen">
+			<span>{chosen.length === 1 ? '1 take selected' : `${chosen.length} takes selected`}</span>
+			<Button variant="primary" disabled={chosen.length < 2} onclick={() => onEditTogether(chosen)}>Edit together</Button>
+			<Button onclick={() => (selected = [])}>Clear</Button>
+		</div>
+	{/if}
 	{#if listed.length === 0}
 		<p class="empty">{emptyMessage}</p>
 	{:else}
 		<ul>
 			{#each listed as session (session.id)}
-				<TakeRow {session} progress={progress[session.id]} onRecover={() => onRecover(session)} onRetry={() => onRetry(session)} onEdit={() => onEdit(session)} {onChanged} {persistence} {shows} {onRetryBackup} />
+				<TakeRow
+					{session}
+					progress={progress[session.id]}
+					onRecover={() => onRecover(session)}
+					onRetry={() => onRetry(session)}
+					onEdit={() => onEdit(session)}
+					selected={selected.includes(session.id)}
+					onSelect={(on) => toggle(session, on)}
+					usedIn={projectsUsing(projects, session.id).map((p) => p.title)}
+					{onChanged}
+					{persistence}
+					{shows}
+					{onRetryBackup}
+				/>
 			{/each}
 		</ul>
 	{/if}
@@ -203,6 +238,19 @@
 		gap: 4px;
 		margin: 6px 0 0;
 		padding-left: 20px;
+	}
+	.chosen {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 8px;
+		padding: 8px 8px 8px 14px;
+		border-radius: var(--radius-panel);
+		background: var(--soft);
+		font-size: var(--text-small);
+	}
+	.chosen span {
+		flex: 1;
 	}
 	.empty {
 		padding: 48px 16px;

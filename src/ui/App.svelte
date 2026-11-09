@@ -29,9 +29,19 @@
 	import { checkSessionsOnLaunch, listSessions } from '../lib/storage/sessions';
 	import { showOf, type Show } from '../lib/storage/show-file';
 	import { listShows } from '../lib/storage/shows';
-	import type { Project } from '../lib/storage/project-file';
-	import { lastProjectId, loadProject, projectForSession, setLastProjectId } from '../lib/storage/projects';
+	import { projectsUsing, type Project } from '../lib/storage/project-file';
+	import {
+		createProject,
+		deleteProject,
+		lastProjectId,
+		listProjects,
+		loadProject,
+		projectForSession,
+		saveProject,
+		setLastProjectId
+	} from '../lib/storage/projects';
 	import EditScreen from './EditScreen.svelte';
+	import ProjectList from './ProjectList.svelte';
 	import RecordScreen from './RecordScreen.svelte';
 	import SegmentedControl from './SegmentedControl.svelte';
 	import TakesScreen from './TakesScreen.svelte';
@@ -49,15 +59,14 @@
 
 	let screen = $state<Screen>('record');
 	let sessions = $state<Session[]>([]);
-	// The Project the Edit tab opens: the last one opened, while its take is still Ready.
+	let projects = $state<Project[]>([]);
+	// The Project open in the Edit tab, remembered between visits; without one, the tab lists them.
 	let project = $state<Project | null>(null);
-	const editSession = $derived(
-		sessions.find((s) => s.id === project?.sessions[0]?.sessionId && sessionState(s) === 'ready') ?? null
-	);
+	const readySessions = $derived(sessions.filter((s) => sessionState(s) === 'ready'));
 	const screens = $derived<{ value: Screen; label: string; disabled?: boolean }[]>([
 		{ value: 'record', label: 'Record' },
 		{ value: 'takes', label: 'Takes' },
-		{ value: 'edit', label: 'Edit', disabled: !editSession }
+		{ value: 'edit', label: 'Edit', disabled: projects.length === 0 && readySessions.length === 0 }
 	]);
 	let shows = $state<Show[]>([]);
 	let progress = $state<Record<string, number>>({});
@@ -103,16 +112,50 @@
 		if (screen === 'takes') recoveredIds = [];
 	});
 
-	// The take being edited was deleted.
+	// Nothing left to edit: every take and Project deleted.
 	$effect(() => {
-		if (screen === 'edit' && !editSession) screen = 'takes';
+		if (screen === 'edit' && screens[2]!.disabled) screen = 'takes';
 	});
 
 	/** Edit on a Ready take: opens its Project, made the first time. */
 	async function edit(session: Session) {
-		project = await projectForSession(session);
-		setLastProjectId(project.id);
+		open(await projectForSession(session));
+		await refreshProjects();
 		screen = 'edit';
+	}
+
+	/** Edit together on several takes: a new Project of them, in the order listed. */
+	async function editTogether(chosen: Session[]) {
+		open(await createProject(chosen));
+		await refreshProjects();
+		screen = 'edit';
+	}
+
+	function open(opened: Project | null) {
+		project = opened;
+		setLastProjectId(opened?.id ?? null);
+	}
+
+	async function refreshProjects() {
+		projects = (await listProjects()).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+		// The open Project as saved: deleting a take may have taken it out; deleting the Project closes it.
+		if (project) project = projects.find((p) => p.id === project!.id) ?? null;
+	}
+
+	function projectChanged(changed: Project) {
+		project = changed;
+		projects = projects.map((p) => (p.id === changed.id ? changed : p));
+	}
+
+	async function renameProject(renamed: Project, title: string) {
+		await saveProject({ ...renamed, title });
+		await refreshProjects();
+	}
+
+	async function removeProject(removed: Project) {
+		await deleteProject(removed.id);
+		if (project?.id === removed.id) open(null);
+		await refreshProjects();
 	}
 
 	async function loadLastProject() {
@@ -133,6 +176,7 @@
 
 	async function refresh() {
 		sessions = await listSessions();
+		await refreshProjects();
 	}
 
 	async function refreshShows() {
@@ -341,6 +385,7 @@
 				active={screen === 'record'}
 				browser={support.browser}
 				{lastTake}
+				usedIn={lastTake ? projectsUsing(projects, lastTake.id).map((p) => p.title) : []}
 				progress={lastTakeId ? progress[lastTakeId] : undefined}
 				onStarted={(session) => {
 					capturing = true;
@@ -375,6 +420,8 @@
 				onRecover={recover}
 				onRetry={finalize}
 				onEdit={edit}
+				onEditTogether={editTogether}
+				{projects}
 				onChanged={refresh}
 				{shows}
 				onShowsChanged={refreshShows}
@@ -387,11 +434,15 @@
 			/>
 		</section>
 		<!-- Mounted only while open, so playback and peak decoding stop when the user leaves it. -->
-		{#if screen === 'edit' && project && editSession}
+		{#if screen === 'edit'}
 			<section aria-label="Edit">
-				{#key project.id}
-					<EditScreen {project} session={editSession} onProjectChange={(changed) => (project = changed)} />
-				{/key}
+				{#if project}
+					{#key project.id}
+						<EditScreen {project} library={readySessions} onProjectChange={projectChanged} onClose={() => open(null)} />
+					{/key}
+				{:else}
+					<ProjectList {projects} {sessions} onOpen={open} onRename={renameProject} onDelete={removeProject} />
+				{/if}
 			</section>
 		{/if}
 	</main>

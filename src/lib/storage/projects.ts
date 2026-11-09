@@ -1,8 +1,8 @@
 // Reading and writing Project files in OPFS, and which Project the Edit tab
 // opens.
 
-import { listDirectories, readJson, writeJson } from './opfs.ts';
-import { newProject, projectFilePath, projectsDir, soloProjectFor, type Project } from './project-file.ts';
+import { listDirectories, readJson, removeDirectory, writeJson } from './opfs.ts';
+import { newProject, projectFilePath, projectsDir, projectsUsing, removeSession, soloProjectFor, type Project } from './project-file.ts';
 import type { Session } from './session-file.ts';
 
 export function loadProject(projectId: string): Promise<Project> {
@@ -28,9 +28,27 @@ export function saveProject(project: Project): Promise<void> {
 export async function projectForSession(session: Session, now = new Date()): Promise<Project> {
 	const existing = soloProjectFor(await listProjects(), session.id);
 	if (existing) return existing;
-	const project = newProject({ now, session });
-	await writeJson(projectFilePath(project.id), project);
+	return createProject([session], now);
+}
+
+/** A new Project of these takes, in this order. */
+export async function createProject(sessions: Session[], now = new Date()): Promise<Project> {
+	const project = newProject({ now, sessions });
+	await saveProject(project);
 	return project;
+}
+
+/** Deletes a Project. Its Sessions and their Recordings are untouched. */
+export async function deleteProject(projectId: string): Promise<void> {
+	await removeDirectory(`${projectsDir}/${projectId}`);
+	if (lastProjectId() === projectId) setLastProjectId(null);
+}
+
+/** Takes a deleted take out of every Project that used it, with its Cuts. */
+export async function removeSessionFromProjects(sessionId: string): Promise<void> {
+	for (const project of projectsUsing(await listProjects(), sessionId)) {
+		await saveProject({ ...project, sessions: removeSession(project.sessions, sessionId) });
+	}
 }
 
 const lastProjectKey = 'plowshare.lastProject';
