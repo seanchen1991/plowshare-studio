@@ -25,13 +25,24 @@ export async function recordTake(
 	return readOpfsJson<Session>(page, `sessions/${sessionId}/session.json`);
 }
 
+/**
+ * A JSON file in OPFS. Read again if the app replaces it mid-read: Chrome then
+ * fails the read (NotReadableError) rather than giving the old or new file.
+ */
 export function readOpfsJson<T>(page: Page, path: string): Promise<T> {
 	return page.evaluate(async (path) => {
-		let dir = await navigator.storage.getDirectory();
-		const parts = path.split('/');
-		for (const name of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(name);
-		const file = await (await dir.getFileHandle(parts.at(-1)!)).getFile();
-		return JSON.parse(await file.text());
+		for (let attempt = 0; ; attempt++) {
+			try {
+				let dir = await navigator.storage.getDirectory();
+				const parts = path.split('/');
+				for (const name of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(name);
+				const file = await (await dir.getFileHandle(parts.at(-1)!)).getFile();
+				return JSON.parse(await file.text());
+			} catch (error) {
+				if ((error as DOMException).name !== 'NotReadableError' || attempt >= 5) throw error;
+				await new Promise((resolve) => setTimeout(resolve, 50));
+			}
+		}
 	}, path);
 }
 
