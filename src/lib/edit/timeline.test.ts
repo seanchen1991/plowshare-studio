@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Recording, Session } from '../storage/session-file.ts';
-import { locate, placedSegments, rulerMarks, sessionDurationUs } from './timeline.ts';
+import { followPlayhead, locate, maxZoom, placedSegments, revealPlayhead, rulerMarks, sessionDurationUs } from './timeline.ts';
 
 const segment = (index: number, startUs: number, durationUs: number | null, path: string | null = `seg-0${index}.mp4`) => ({
 	index,
@@ -59,17 +59,63 @@ describe('locate', () => {
 describe('rulerMarks', () => {
 	it('uses the smallest step that keeps marks apart', () => {
 		// 30 s across 1000 px: 33 px a second, so 5 s steps (167 px) are the first at least 80 px apart.
-		expect(rulerMarks(30_000_000, 1000)).toEqual([0, 5, 10, 15, 20, 25, 30].map((s) => s * 1e6));
+		expect(rulerMarks(0, 30_000_000, 1000 / 30)).toEqual([0, 5, 10, 15, 20, 25, 30].map((s) => s * 1e6));
 	});
 
 	it('steps in minutes for long takes', () => {
-		const marks = rulerMarks(60 * 60e6, 1000);
+		const marks = rulerMarks(0, 3600e6, 1000 / 3600);
 		expect(marks[1]).toBe(300e6);
 		expect(marks.at(-1)).toBe(3600e6);
 	});
 
+	it('marks only the part on screen when zoomed in, from the step before it', () => {
+		// 5 s across 1000 px: 200 px a second, so a mark every second.
+		expect(rulerMarks(1_800_500_000, 1_805_500_000, 200)).toEqual([1800, 1801, 1802, 1803, 1804, 1805].map((s) => s * 1e6));
+	});
+
 	it('has just the start for an empty timeline', () => {
-		expect(rulerMarks(0, 1000)).toEqual([0]);
-		expect(rulerMarks(10e6, 0)).toEqual([0]);
+		expect(rulerMarks(0, 0, 100)).toEqual([0]);
+		expect(rulerMarks(0, 10e6, 0)).toEqual([0]);
+	});
+});
+
+describe('maxZoom', () => {
+	it('zooms in to 5 s across', () => {
+		expect(maxZoom(3600e6, 1000, 3, 100)).toBe(720);
+	});
+
+	it('stops sooner on a wide screen, so bars never outnumber peaks', () => {
+		// 1800 px of 3 px bars is 600 bars: at 100 peaks a second, 6 s across.
+		expect(maxZoom(60e6, 1800, 3, 100)).toBe(10);
+	});
+
+	it("doesn't zoom out past fitting the whole take", () => {
+		expect(maxZoom(3e6, 1000, 3, 100)).toBe(1);
+	});
+});
+
+describe('followPlayhead', () => {
+	it('turns the page when the playhead runs off the right edge', () => {
+		expect(followPlayhead(995, 1002, 0, 1000)).toBe(902);
+	});
+
+	it('stays put while the playhead is in view', () => {
+		expect(followPlayhead(400, 410, 0, 1000)).toBeNull();
+	});
+
+	it("doesn't pull the view back to a playhead the user scrolled away from", () => {
+		expect(followPlayhead(5000, 5010, 0, 1000)).toBeNull();
+		expect(followPlayhead(100, 110, 2000, 1000)).toBeNull();
+	});
+});
+
+describe('revealPlayhead', () => {
+	it('centres a playhead that jumped out of view', () => {
+		expect(revealPlayhead(3000, 0, 1000)).toBe(2500);
+		expect(revealPlayhead(100, 2000, 1000)).toBe(-400);
+	});
+
+	it('leaves one in view alone', () => {
+		expect(revealPlayhead(1500, 1000, 1000)).toBeNull();
 	});
 });

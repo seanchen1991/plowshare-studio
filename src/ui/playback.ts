@@ -12,6 +12,8 @@ export class Playback {
 	timeUs = 0;
 	playing = false;
 	showing: Showing = 'gap';
+	/** Playback speed: 1 is normal. */
+	rate = 1;
 
 	private loaded: PlacedSegment | null = null;
 	private url: string | null = null;
@@ -43,6 +45,14 @@ export class Playback {
 		this.playing = false;
 		cancelAnimationFrame(this.frame);
 		this.media.pause();
+		this.onChange();
+	}
+
+	/** Changes the speed, keeping the pitch; it holds across Segments, since a new file starts at the default rate. */
+	setRate(rate: number): void {
+		this.rate = rate;
+		this.media.defaultPlaybackRate = rate;
+		this.media.playbackRate = rate;
 		this.onChange();
 	}
 
@@ -88,7 +98,7 @@ export class Playback {
 
 	private readonly tick = (now: number) => {
 		if (!this.playing) return;
-		const elapsedUs = (now - this.lastTick) * 1000;
+		const elapsedUs = (now - this.lastTick) * 1000 * this.rate;
 		this.lastTick = now;
 		const position = locate(this.segments, this.timeUs);
 		if (this.showing === 'segment' && this.loaded) {

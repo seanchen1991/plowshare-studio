@@ -77,6 +77,15 @@ for (const size of widths) {
 			await expect(page.getByTestId('stage')).toHaveAttribute('data-showing', 'gap');
 			await shot(page, testInfo, 'edit-2-in-a-capture-gap');
 
+			// Zoomed all the way in on the second Segment, a few seconds across.
+			await ruler.click({ position: { x: box.width * 0.85, y: box.height / 2 } });
+			await expect(page.getByTestId('stage')).toHaveAttribute('data-showing', 'segment');
+			const zoomIn = page.getByRole('button', { name: 'Zoom in' });
+			while (await zoomIn.isEnabled()) await zoomIn.click();
+			await page.waitForTimeout(500);
+			await shot(page, testInfo, 'edit-4-zoomed-in');
+			while (await page.getByRole('button', { name: 'Zoom out' }).isEnabled()) await page.keyboard.press('-');
+
 			// An audio-only take.
 			await page.getByRole('tab', { name: 'Record' }).click();
 			await page.getByRole('combobox', { name: 'Camera' }).selectOption({ label: 'Camera off (audio only)' });

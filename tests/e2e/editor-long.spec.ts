@@ -1,6 +1,7 @@
 // An hour-long take opened in the editor (LONG_TEST_MINUTES to shorten it):
-// the waveform fills in while the page stays responsive, and memory stays flat
-// while the peaks worker decodes the whole hour. Chrome only. The take is made
+// the waveform fills in while the page stays responsive, memory stays flat
+// while the peaks worker decodes the whole hour, and zooming and scrolling
+// across it stay smooth. Chrome only. The take is made
 // with ffmpeg rather than recorded, so this runs in minutes, not an hour.
 
 import { execFileSync } from 'node:child_process';
@@ -130,7 +131,47 @@ test(`a ${minutes}-minute take opens in the editor without freezing the page, wi
 		.poll(() => page.getByTestId('editor-video').evaluate((v: HTMLVideoElement) => v.currentTime))
 		.toBeGreaterThan(minutes * 60 * 0.85);
 
-	const report = { minutes, seconds, worstLateMs, filledPartway, memoryMB };
+	// Zooming all the way in and out, and scrolling across the hour, stay smooth: no long tasks on the main thread.
+	await page.evaluate(() => {
+		const w = window as unknown as { worstLateMs: number; longTasksMs: number[] };
+		w.worstLateMs = 0;
+		w.longTasksMs = [];
+		new PerformanceObserver((list) => w.longTasksMs.push(...list.getEntries().map((e) => e.duration))).observe({ type: 'longtask' });
+	});
+	const zoomIn = page.getByRole('button', { name: 'Zoom in' });
+	const zoomOut = page.getByRole('button', { name: 'Zoom out' });
+	let zoomSteps = 0;
+	while (await zoomIn.isEnabled()) {
+		await page.keyboard.press('+');
+		await page.waitForTimeout(150);
+		zoomSteps++;
+	}
+	const scroller = page.getByTestId('scroller');
+	const scrollerBox = (await scroller.boundingBox())!;
+	await page.mouse.move(scrollerBox.x + scrollerBox.width / 2, scrollerBox.y + scrollerBox.height / 2);
+	for (let i = 0; i < 40; i++) {
+		await page.mouse.wheel(-500, 0);
+		await page.waitForTimeout(25);
+	}
+	for (const at of [0.5, 0.1, 0.75]) {
+		await scroller.evaluate((el, at) => (el.scrollLeft = el.scrollWidth * at), at);
+		// The beeps in view are drawn at once.
+		await expect.poll(() => canvasHas(0.5)).toBe(true);
+	}
+	while (await zoomOut.isEnabled()) {
+		await page.keyboard.press('-');
+		await page.waitForTimeout(150);
+	}
+	await expect.poll(() => canvasHas(0.98)).toBe(true);
+	const navigation = {
+		zoomSteps,
+		...(await page.evaluate(() => {
+			const w = window as unknown as { worstLateMs: number; longTasksMs: number[] };
+			return { worstLateMs: w.worstLateMs, longestTaskMs: Math.max(0, ...w.longTasksMs) };
+		}))
+	};
+
+	const report = { minutes, seconds, worstLateMs, filledPartway, memoryMB, navigation };
 	await testInfo.attach('report.json', { body: JSON.stringify(report, null, 2), contentType: 'application/json' });
 	console.log(`Long editor report: ${JSON.stringify({ ...report, memoryMB: [memoryMB[0], Math.max(...memoryMB), memoryMB.at(-1)] })}`);
 
@@ -139,4 +180,8 @@ test(`a ${minutes}-minute take opens in the editor without freezing the page, wi
 	expect(worstLateMs).toBeLessThan(200);
 	// Flat memory: the hour is decoded a block at a time, never held whole (an hour of decoded audio is ~700 MB).
 	expect(Math.max(...memoryMB) - memoryMB[0]!).toBeLessThan(150);
+	// Zoomed from the whole hour to a few seconds across, with no frame the eye would catch.
+	expect(zoomSteps).toBeGreaterThanOrEqual(9);
+	expect(navigation.longestTaskMs).toBeLessThan(100);
+	expect(navigation.worstLateMs).toBeLessThan(100);
 });
