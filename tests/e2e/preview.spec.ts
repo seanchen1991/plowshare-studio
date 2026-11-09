@@ -113,7 +113,7 @@ test('preview skips the Cuts, with sound and picture in step across every Cut an
 	await expect(page.getByTestId('timecode')).toContainText(`${format(toEditTime(cuts, cuts[1]!.endUs))} /`);
 	await expect(page.getByTestId('stage')).toHaveAttribute('data-showing', 'segment');
 
-	await checkPreview(page, testInfo, browserName, kept.map((k) => ({ editS: toEditTime(cuts, k.atUs) / 1e6, frameCode: k.frameCode })), editUs, { fast: true });
+	await checkPreview(page, testInfo, browserName, kept.map((k) => ({ editS: toEditTime(cuts, k.atUs) / 1e6, frameCode: k.frameCode, hz: k.hz })), editUs, { fast: true });
 });
 
 test('preview plays across Session boundaries in order, skipping Cuts, with sound and picture in step', async ({ page, browserName }, testInfo) => {
@@ -138,7 +138,7 @@ test('preview plays across Session boundaries in order, skipping Cuts, with soun
 	const between = (beep: { atUs: number }) => beep.atUs + 500_000;
 	const takeBeeps = [];
 	for (const session of sessions) takeBeeps.push(await beepsInSegments(page, testInfo, browserName, session.recordings[0]!.segments));
-	const [first, second] = takeBeeps as [{ atUs: number; frameCode: number }[], { atUs: number; frameCode: number }[]];
+	const [first, second] = takeBeeps as [{ atUs: number; frameCode: number; hz: number }[], { atUs: number; frameCode: number; hz: number }[]];
 	expect(first.length).toBeGreaterThanOrEqual(5);
 	expect(second.length).toBeGreaterThanOrEqual(5);
 	const durations = sessions.map((s) => s.recordings[0]!.segments[0]!.durationUs!);
@@ -161,7 +161,7 @@ test('preview plays across Session boundaries in order, skipping Cuts, with soun
 	const kept = takeBeeps.flatMap((beeps, i) =>
 		beeps
 			.filter((b) => !cuts[i]!.some((c) => b.atUs >= c.startUs && b.atUs < c.endUs))
-			.map((b) => ({ editS: ((i === 0 ? 0 : firstEditUs) + toEditTime(cuts[i]!, b.atUs)) / 1e6, frameCode: b.frameCode }))
+			.map((b) => ({ editS: ((i === 0 ? 0 : firstEditUs) + toEditTime(cuts[i]!, b.atUs)) / 1e6, frameCode: b.frameCode, hz: b.hz }))
 	);
 	await checkPreview(page, testInfo, browserName, kept, editUs);
 });
@@ -175,7 +175,7 @@ async function checkPreview(
 	page: Page,
 	testInfo: TestInfo,
 	browserName: string,
-	beeps: { editS: number; frameCode: number }[],
+	beeps: { editS: number; frameCode: number; hz: number }[],
 	editUs: number,
 	{ fast = false } = {}
 ) {
@@ -228,12 +228,13 @@ async function checkPreview(
 	await expect(page.getByTestId('speed')).toHaveText('2×');
 	const twice = beepsIn((await recordPreview(page, testInfo.outputPath('preview-2x.webm'), editUs / 2)).file);
 	const fastSpacingErrorsMs = expected.slice(1).map((e, i) => Math.round(((twice[i + 1]?.timeSeconds ?? NaN) - twice[0]!.timeSeconds - (e - expected[0]!) / 2) * 1000));
+	// Each beep's pitch at 2× against the same beep in the recording: unstretched, it would be twice as high.
 	const pitches = twice.map((h) => Math.round(h.frequencyHz));
-	console.log(`Preview at 2× (${browserName}): ${JSON.stringify({ heard: twice.length, fastSpacingErrorsMs, pitches })}`);
+	const pitchRatios = twice.slice(0, beeps.length).map((h, i) => Math.round((h.frequencyHz / beeps[i]!.hz) * 100) / 100);
+	console.log(`Preview at 2× (${browserName}): ${JSON.stringify({ heard: twice.length, fastSpacingErrorsMs, pitches, pitchRatios })}`);
 	expect(twice.length).toBeGreaterThanOrEqual(expected.length);
 	for (const error of fastSpacingErrorsMs) expect(Math.abs(error)).toBeLessThanOrEqual(40);
-	// The fixture's tones are 1 and 2 kHz; played faster without stretching, they'd be 2 and 4.
-	for (const hz of pitches) expect(Math.min(Math.abs(hz - fixtureSpec.toneHz), Math.abs(hz - fixtureSpec.markerHz))).toBeLessThan(150);
+	for (const ratio of pitchRatios) expect(Math.abs(ratio - 1)).toBeLessThan(0.08);
 }
 
 /**
@@ -282,13 +283,13 @@ async function recordPreview(page: Page, file: string, playsUs: number): Promise
 
 /** The beeps in Segments' files, placed on their take's timeline, with the frame recorded with each (Chrome only). */
 async function beepsInSegments(page: Page, testInfo: TestInfo, browserName: string, segments: Segment[]) {
-	const beeps: { atUs: number; frameCode: number }[] = [];
+	const beeps: { atUs: number; frameCode: number; hz: number }[] = [];
 	for (const segment of segments) {
 		const file = testInfo.outputPath(`${segment.path!.replaceAll('/', '-')}`);
 		await saveOpfsFile(page, segment.path!, file);
 		for (const beep of beepsIn(file)) {
 			const frameCode = browserName === 'chromium' ? readFrameCode(greyFrameAt(file, beep.timeSeconds + 0.01)) : -1;
-			beeps.push({ atUs: segment.startUs + Math.round(beep.timeSeconds * 1e6), frameCode });
+			beeps.push({ atUs: segment.startUs + Math.round(beep.timeSeconds * 1e6), frameCode, hz: beep.frequencyHz });
 		}
 	}
 	return beeps;
