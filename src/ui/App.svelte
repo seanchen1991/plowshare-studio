@@ -29,6 +29,7 @@
 	import { checkSessionsOnLaunch, listSessions } from '../lib/storage/sessions';
 	import { showOf, type Show } from '../lib/storage/show-file';
 	import { listShows } from '../lib/storage/shows';
+	import { importFile } from '../lib/storage/import';
 	import { projectsUsing, type Project } from '../lib/storage/project-file';
 	import {
 		createProject,
@@ -134,6 +135,13 @@
 	function open(opened: Project | null) {
 		project = opened;
 		setLastProjectId(opened?.id ?? null);
+	}
+
+	/** Open a file…: copies it in as a new take, and returns it once the list has it. */
+	async function openFile(file: File): Promise<Session> {
+		const session = await importFile(file);
+		await refresh();
+		return session;
 	}
 
 	async function refreshProjects() {
@@ -421,6 +429,7 @@
 				onRetry={finalize}
 				onEdit={edit}
 				onEditTogether={editTogether}
+				onOpenFile={openFile}
 				{projects}
 				onChanged={refresh}
 				{shows}
@@ -438,7 +447,7 @@
 			<section aria-label="Edit">
 				{#if project}
 					{#key project.id}
-						<EditScreen {project} library={readySessions} onProjectChange={projectChanged} onClose={() => open(null)} />
+						<EditScreen {project} library={readySessions} onProjectChange={projectChanged} onClose={() => open(null)} onOpenFile={openFile} />
 					{/key}
 				{:else}
 					<ProjectList {projects} {sessions} onOpen={open} onRename={renameProject} onDelete={removeProject} />

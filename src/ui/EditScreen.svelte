@@ -38,12 +38,15 @@
 	import LaneWaveform, { barStep } from './LaneWaveform.svelte';
 	import { formatDuration, formatTimecode } from './format';
 	import { EditPlayer, type Showing } from './edit-player';
+	import { ImportError } from '../lib/storage/import';
+	import { importMessage, openableFiles } from './import-message';
 
 	let {
 		project,
 		library,
 		onProjectChange,
-		onClose
+		onClose,
+		onOpenFile
 	}: {
 		project: Project;
 		/** Every Ready take, to find the Project's in and to add from. */
@@ -51,6 +54,8 @@
 		onProjectChange: (project: Project) => void;
 		/** Back to the list of Projects. */
 		onClose: () => void;
+		/** Open a file…: copies a recording from disk in as a new take. */
+		onOpenFile: (file: File) => Promise<Session>;
 	} = $props();
 
 	interface Track {
@@ -459,6 +464,28 @@
 		commit(addSessions(history.present, addable.filter((s) => picked.includes(s.id)).map((s) => s.id)));
 	}
 
+	// Open a file… from the picker: the new take is added to the Project straight away.
+	let fileInput = $state<HTMLInputElement>();
+	let opening = $state<string | null>(null);
+	let openProblem = $state<string | null>(null);
+
+	async function openChosen() {
+		const file = fileInput?.files?.[0];
+		if (!file || !fileInput) return;
+		fileInput.value = '';
+		picker.close();
+		opening = file.name;
+		openProblem = null;
+		try {
+			const session = await onOpenFile(file);
+			commit(addSessions(history.present, [session.id]));
+		} catch (error) {
+			openProblem = error instanceof ImportError ? importMessage(error.problem, file.name) : `Couldn't open “${file.name}”: ${String(error)}.`;
+		} finally {
+			opening = null;
+		}
+	}
+
 	function moveTake(sessionId: string, to: number) {
 		commit(moveSession(history.present, history.present.findIndex((ps) => ps.sessionId === sessionId), to));
 	}
@@ -609,6 +636,12 @@
 		{/each}
 		<li><Button onclick={openPicker}>Add takes</Button></li>
 	</ol>
+	{#if opening}
+		<p class="opening" role="status">Copying “{opening}” into Plowshare Studio…</p>
+	{/if}
+	{#if openProblem}
+		<p class="open-problem" role="alert" data-testid="open-problem">{openProblem}</p>
+	{/if}
 	{#if entries.length === 0}
 		<p class="no-takes" data-testid="no-takes">This project has no takes. Add takes to start editing it.</p>
 	{/if}
@@ -720,6 +753,11 @@
 			{/each}
 		</ul>
 	{/if}
+	<p class="open-file">
+		Or bring in a recording from this computer:
+		<Button onclick={() => fileInput?.click()}>Open a file…</Button>
+		<input bind:this={fileInput} type="file" accept={openableFiles} hidden onchange={openChosen} data-testid="open-file" />
+	</p>
 	{#snippet actions()}
 		<Button type="submit" value="cancel">Cancel</Button>
 		<Button type="submit" value="add" variant="primary" disabled={picked.length === 0}>Add</Button>
@@ -837,6 +875,28 @@
 	.icon:disabled {
 		opacity: 0.35;
 		cursor: default;
+	}
+	.opening {
+		margin: 0;
+		color: var(--muted);
+		font-size: var(--text-small);
+	}
+	.open-problem {
+		margin: 0;
+		padding: 10px 14px;
+		border-radius: var(--radius-panel);
+		background: var(--problem-bg);
+		color: var(--problem-fg);
+		font-size: var(--text-small);
+	}
+	.open-file {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 8px;
+		margin: 4px 0 0;
+		color: var(--muted);
+		font-size: var(--text-small);
 	}
 	.no-takes {
 		margin: 0;

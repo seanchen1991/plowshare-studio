@@ -158,6 +158,19 @@ for (const size of widths) {
 			await page.waitForTimeout(1500);
 			await shot(page, testInfo, 'projects-3-three-takes');
 
+			// Add takes also offers Open a file…; a file it can't read says so.
+			await page.getByRole('button', { name: 'Add takes' }).click();
+			await shot(page, testInfo, 'projects-5-add-takes-all-in');
+			await page.getByRole('button', { name: 'Cancel' }).click();
+			await page.getByRole('tab', { name: 'Takes' }).click();
+			await page.getByRole('region', { name: 'Takes' }).getByTestId('open-file').setInputFiles({
+				name: 'Notes for episode 4.mp4',
+				mimeType: 'video/mp4',
+				buffer: Buffer.from('Not a video.\n'.repeat(50))
+			});
+			await expect(page.getByTestId('open-problem')).toBeVisible();
+			await shot(page, testInfo, 'open-file-1-cant-read');
+
 			// The list of Projects, with a solo one too.
 			await page.getByRole('tab', { name: 'Takes' }).click();
 			await rows.nth(0).getByRole('button', { name: 'Edit' }).click();

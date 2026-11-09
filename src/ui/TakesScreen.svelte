@@ -3,6 +3,8 @@
 	import { persistenceFixSteps, type Persistence } from '../lib/storage/persistence';
 	import { projectsUsing, type Project } from '../lib/storage/project-file';
 	import { sessionState, type Session } from '../lib/storage/session-file';
+	import { ImportError } from '../lib/storage/import';
+	import { importMessage, openableFiles } from './import-message';
 	import { showOf, type Show } from '../lib/storage/show-file';
 	import { createShow, deleteShow, renameShow } from '../lib/storage/shows';
 	import type { BackupStatus } from '../lib/storage/backup';
@@ -21,6 +23,7 @@
 		onRetry,
 		onEdit,
 		onEditTogether,
+		onOpenFile,
 		projects,
 		onChanged,
 		persistence,
@@ -44,6 +47,8 @@
 		onEdit: (session: Session) => void;
 		/** Opens several Ready takes in a new Project, in the order given. */
 		onEditTogether: (sessions: Session[]) => void;
+		/** Open a file…: copies a recording from disk in as a new take. */
+		onOpenFile: (file: File) => Promise<Session>;
 		/** Every Project, to warn before deleting a take one uses. */
 		projects: Project[];
 		onChanged: () => void;
@@ -73,6 +78,26 @@
 	// Ready takes ticked to edit together, in the order they're listed.
 	let selected = $state<string[]>([]);
 	const chosen = $derived(listed.filter((s) => selected.includes(s.id) && sessionState(s) === 'ready'));
+
+	// Open a file…
+	let fileInput = $state<HTMLInputElement>();
+	let opening = $state<string | null>(null);
+	let openProblem = $state<string | null>(null);
+
+	async function openChosen() {
+		const file = fileInput?.files?.[0];
+		if (!file || !fileInput) return;
+		fileInput.value = '';
+		opening = file.name;
+		openProblem = null;
+		try {
+			await onOpenFile(file);
+		} catch (error) {
+			openProblem = error instanceof ImportError ? importMessage(error.problem, file.name) : `Couldn't open “${file.name}”: ${String(error)}.`;
+		} finally {
+			opening = null;
+		}
+	}
 
 	function toggle(session: Session, on: boolean) {
 		selected = on ? [...selected, session.id] : selected.filter((id) => id !== session.id);
@@ -146,6 +171,8 @@
 				onchange={(value) => (value === 'new' ? newShow() : (filter = value))}
 			/>
 		{/key}
+		<Button onclick={() => fileInput?.click()} disabled={opening !== null}>{opening ? 'Opening…' : 'Open a file…'}</Button>
+		<input bind:this={fileInput} type="file" accept={openableFiles} hidden onchange={openChosen} data-testid="open-file" />
 		{#if filterShow}
 			<Menu
 				label="Show actions"
@@ -156,6 +183,12 @@
 			>
 		{/if}
 	</div>
+	{#if opening}
+		<p class="opening" role="status">Copying “{opening}” into Plowshare Studio…</p>
+	{/if}
+	{#if openProblem}
+		<p class="open-problem" role="alert" data-testid="open-problem">{openProblem}</p>
+	{/if}
 	{#if chosen.length > 0}
 		<div class="chosen" role="status" data-testid="chosen">
 			<span>{chosen.length === 1 ? '1 take selected' : `${chosen.length} takes selected`}</span>
@@ -238,6 +271,19 @@
 		gap: 4px;
 		margin: 6px 0 0;
 		padding-left: 20px;
+	}
+	.opening {
+		margin: 0;
+		color: var(--muted);
+		font-size: var(--text-small);
+	}
+	.open-problem {
+		margin: 0;
+		padding: 10px 14px;
+		border-radius: var(--radius-panel);
+		background: var(--problem-bg);
+		color: var(--problem-fg);
+		font-size: var(--text-small);
 	}
 	.chosen {
 		display: flex;
