@@ -35,6 +35,15 @@ export function probeStreams(file: string): ProbedStream[] {
 	return JSON.parse(out.toString()).streams;
 }
 
+/**
+ * When the first audio track starts on the file's timeline, in seconds. Decoded
+ * audio begins at its first sample, so add this to place a sound against the video.
+ */
+export function audioStartSeconds(file: string): number {
+	const out = run('ffprobe', ['-v', 'error', '-select_streams', 'a:0', '-show_entries', 'stream=start_time', '-of', 'csv=p=0', file]);
+	return Number(out.toString().trim()) || 0;
+}
+
 /** The first audio track as mono samples. A low sample rate keeps hour-long files small; the beeps are 1 and 2 kHz. */
 export function decodeAudio(file: string, sampleRate = 8000): Float32Array {
 	const out = run('ffmpeg', ['-v', 'error', '-i', file, '-map', '0:a:0', '-ac', '1', '-ar', String(sampleRate), '-f', 'f32le', '-']);

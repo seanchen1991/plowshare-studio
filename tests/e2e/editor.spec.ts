@@ -8,7 +8,7 @@ import { fixtureSpec } from '../fixtures/spec.ts';
 import { glueTakes, opfsFileExists, readOpfsJson, recordTake, saveOpfsFile } from '../helpers/app.ts';
 import { detectBeeps } from '../helpers/beeps.ts';
 import { useFixtureMedia } from '../helpers/fake-media.ts';
-import { decodeAudio } from '../helpers/media-file.ts';
+import { audioStartSeconds, decodeAudio } from '../helpers/media-file.ts';
 import { peakDb } from '../../src/lib/analysis/peaks.ts';
 import type { Project } from '../../src/lib/storage/project-file.ts';
 import type { Segment } from '../../src/lib/storage/session-file.ts';
@@ -52,16 +52,22 @@ function drawnHeight(page: Page, fraction: number, lane = 0): Promise<number> {
 	}, fraction);
 }
 
+/** What the stage shows, and the place in the take (seconds) of the frame last drawn on it. */
 const editorState = (page: Page) =>
 	page.evaluate(() => {
-		const video = document.querySelector<HTMLVideoElement>('[data-testid="editor-video"]')!;
+		const canvas = document.querySelector<HTMLCanvasElement>('[data-testid="editor-canvas"]')!;
 		return {
 			showing: document.querySelector('[data-testid="stage"]')!.getAttribute('data-showing'),
-			currentTime: video.currentTime,
-			paused: video.paused,
-			src: video.currentSrc
+			frameSeconds: Number(canvas.dataset.frameUs ?? NaN) / 1e6,
+			playing: document.querySelector('button[aria-label="Pause"]') !== null
 		};
 	});
+
+/** Where the playhead is in the take, Cuts included, in seconds. */
+async function takeSeconds(page: Page): Promise<number> {
+	const [m, s] = (await page.getByTestId('take-time').innerText()).replace('Take', '').trim().split(':');
+	return Number(m) * 60 + Number(s);
+}
 
 /** The playhead's time in seconds, from the timecode (mm:ss.t). */
 async function playheadSeconds(page: Page): Promise<number> {
@@ -112,7 +118,11 @@ test('Edit on a Ready take opens it in a Project, with its waveform showing the 
 	const file = testInfo.outputPath('take.' + segment.path!.split('.').at(-1));
 	await saveOpfsFile(page, segment.path!, file);
 	const rate = 8000;
-	const beeps = detectBeeps(decodeAudio(file, rate), rate).filter((b) => b.timeSeconds < durationS - 0.6);
+	// Placed on the file's timeline: its audio may start a little after its video.
+	const audioStart = audioStartSeconds(file);
+	const beeps = detectBeeps(decodeAudio(file, rate), rate)
+		.map((b) => ({ ...b, timeSeconds: b.timeSeconds + audioStart }))
+		.filter((b) => b.timeSeconds < durationS - 0.6);
 	expect(beeps.length).toBeGreaterThanOrEqual(4);
 	for (const beep of beeps) {
 		// Loud in the peaks where the beep is, quiet half a second later.
@@ -175,17 +185,17 @@ test('play, pause and seek; the video follows the playhead across a Capture gap 
 	expect(paused).toBeGreaterThan(0.8);
 	expect(paused).toBeLessThan(2.5);
 	let state = await editorState(page);
-	expect(state.paused).toBe(true);
-	expect(Math.abs(state.currentTime - paused)).toBeLessThan(0.2);
+	expect(state.playing).toBe(false);
+	expect(Math.abs(state.frameSeconds - paused)).toBeLessThan(0.2);
 	await page.waitForTimeout(500);
 	expect(await playheadSeconds(page)).toBe(paused);
 
-	// Seek by clicking the ruler: the video goes there too.
+	// Seek by clicking the ruler: the picture goes there too.
 	const ruler = page.getByTestId('ruler');
 	const box = (await ruler.boundingBox())!;
 	const target = (a.durationUs! / 2) / totalUs;
 	await ruler.click({ position: { x: box.width * target, y: box.height / 2 } });
-	await expect.poll(async () => Math.abs((await editorState(page)).currentTime - a.durationUs! / 2e6)).toBeLessThan(0.15);
+	await expect.poll(async () => Math.abs((await editorState(page)).frameSeconds - a.durationUs! / 2e6)).toBeLessThan(0.15);
 	expect(Math.abs((await playheadSeconds(page)) - a.durationUs! / 2e6)).toBeLessThan(0.15);
 
 	// Clicking a lane in the Capture gap shows nothing.
@@ -193,23 +203,22 @@ test('play, pause and seek; the video follows the playhead across a Capture gap 
 	const laneBox = (await lane.boundingBox())!;
 	await lane.click({ position: { x: laneBox.width * ((a.durationUs! + gapUs / 2) / totalUs), y: laneBox.height / 2 } });
 	await expect.poll(async () => (await editorState(page)).showing).toBe('gap');
-	await expect(page.getByTestId('editor-video')).toBeHidden();
+	await expect(page.getByTestId('editor-canvas')).toBeHidden();
 
 	// Play from just before the end of the first Segment: through the gap, into the second.
 	await ruler.click({ position: { x: box.width * ((a.durationUs! - 700_000) / totalUs), y: box.height / 2 } });
 	await expect.poll(async () => (await editorState(page)).showing).toBe('segment');
-	const firstSrc = (await editorState(page)).src;
 	await page.getByRole('button', { name: 'Play' }).click();
 	await expect.poll(async () => (await editorState(page)).showing, { timeout: 5000 }).toBe('gap');
 	await expect.poll(async () => (await editorState(page)).showing, { timeout: 6000 }).toBe('segment');
 	await page.waitForTimeout(1000);
 	state = await editorState(page);
-	expect(state.src).not.toBe(firstSrc);
-	expect(state.paused).toBe(false);
 	const playhead = await playheadSeconds(page);
-	// The playhead is in the second Segment, with the video at the matching place in its file.
+	expect(state.playing).toBe(true);
+	// The playhead is in the second Segment, with its picture showing at the matching place.
 	expect(playhead).toBeGreaterThan((a.durationUs! + gapUs) / 1e6);
-	expect(Math.abs(state.currentTime - (playhead - (a.durationUs! + gapUs) / 1e6))).toBeLessThan(0.3);
+	expect(state.frameSeconds).toBeGreaterThan((a.durationUs! + gapUs) / 1e6);
+	expect(Math.abs(state.frameSeconds - playhead)).toBeLessThan(0.3);
 
 	// At the end it stops.
 	await expect(page.getByRole('button', { name: 'Play' })).toBeVisible({ timeout: 20_000 });
@@ -228,14 +237,12 @@ test('an audio-only take opens with its waveform and plays', async ({ page }) =>
 
 	await page.getByTestId('session').first().getByRole('button', { name: 'Edit' }).click();
 	await expect(page.getByTestId('audio-only')).toBeVisible();
-	await expect(page.getByTestId('editor-video')).toBeHidden();
+	await expect(page.getByTestId('editor-canvas')).toBeHidden();
 	await expect.poll(() => drawnHeight(page, 0.5), { timeout: 30_000 }).toBeGreaterThan(0);
 
 	await page.getByRole('button', { name: 'Play' }).click();
 	await page.waitForTimeout(1200);
-	const state = await editorState(page);
-	expect(state.paused).toBe(false);
-	expect(state.currentTime).toBeGreaterThan(0.6);
+	expect((await editorState(page)).playing).toBe(true);
 	expect(await playheadSeconds(page)).toBeGreaterThan(0.6);
 });
 
@@ -320,7 +327,6 @@ async function openGappedTake(page: Page): Promise<{ totalUs: number; beepsUs: n
 test('skip, speed and zoom work from the toolbar and the keyboard', async ({ page }) => {
 	test.setTimeout(150_000);
 	const { totalUs } = await openGappedTake(page);
-	const video = page.getByTestId('editor-video');
 	const speed = page.getByTestId('speed');
 
 	// Skip forward and back, 5 s at a time, from the toolbar and with ← → and J.
@@ -359,7 +365,6 @@ test('skip, speed and zoom work from the toolbar and the keyboard', async ({ pag
 	await expect(speed).toHaveText('1×');
 	await speed.click();
 	await expect(speed).toHaveText('1.5×');
-	expect(await video.evaluate((v: HTMLVideoElement) => v.playbackRate)).toBe(1.5);
 	await speed.click();
 	await expect(speed).toHaveText('2×');
 	await expect(speed).toHaveAccessibleName('Speed 2×');
@@ -382,10 +387,13 @@ test('skip, speed and zoom work from the toolbar and the keyboard', async ({ pag
 	const ruler = page.getByTestId('ruler');
 	await ruler.click({ position: { x: ((totalUs - 2e6) / totalUs) * (await ruler.boundingBox())!.width, y: 12 } });
 	await expect(page.getByTestId('stage')).toHaveAttribute('data-showing', 'segment');
-	expect(await video.evaluate((v: HTMLVideoElement) => v.playbackRate)).toBe(2);
+	await page.keyboard.press('Space');
+	rate = await playheadRate(page, 500);
+	await page.keyboard.press('Space');
+	expect(rate).toBeGreaterThan(1.6);
+	expect(rate).toBeLessThan(2.4);
 	await speed.click();
 	await expect(speed).toHaveText('1×');
-	expect(await video.evaluate((v: HTMLVideoElement) => v.playbackRate)).toBe(1);
 
 	// Zoom with + and −, the toolbar, and Ctrl and the wheel (a trackpad pinch).
 	const zoomOut = page.getByRole('button', { name: 'Zoom out' });
@@ -596,10 +604,11 @@ test('select a range and Cut it, restore it, Split at the playhead, undo and red
 	await page.keyboard.press('Backspace');
 	near(await cutBands(page, durationUs), [[0.2, 0.7]]);
 
-	// Clicking a Cut in a lane restores it; clicking the ruler there only moves the playhead.
+	// Clicking a Cut in a lane restores it; clicking the ruler there only moves the playhead, to just after the Cut.
 	await clickAt(page, 'ruler', 0.5);
 	await expect(page.getByTestId('cut')).toHaveCount(1);
-	await expect.poll(() => playheadSeconds(page)).toBeCloseTo((0.5 * durationUs) / 1e6, 0);
+	await expect.poll(() => takeSeconds(page)).toBeCloseTo((0.7 * durationUs) / 1e6, 0);
+	expect(await playheadSeconds(page)).toBeCloseTo((0.2 * durationUs) / 1e6, 0);
 	await clickAt(page, 'lane', 0.5);
 	await expect(page.getByTestId('cut')).toHaveCount(0);
 	await expect.poll(async () => (await savedCuts()).length).toBe(0);

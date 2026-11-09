@@ -123,12 +123,12 @@ test(`a ${minutes}-minute take opens in the editor without freezing the page, wi
 	const worstLateMs = await page.evaluate(() => (window as unknown as { worstLateMs: number }).worstLateMs);
 	await expect.poll(() => canvasHas(0.98)).toBe(true);
 
-	// Still responsive afterwards: seeking near the end moves the video there.
+	// Still responsive afterwards: seeking near the end shows the picture there.
 	const ruler = page.getByTestId('ruler');
 	const box = (await ruler.boundingBox())!;
 	await ruler.click({ position: { x: box.width * 0.9, y: box.height / 2 } });
 	await expect
-		.poll(() => page.getByTestId('editor-video').evaluate((v: HTMLVideoElement) => v.currentTime))
+		.poll(() => page.getByTestId('editor-canvas').evaluate((c: HTMLCanvasElement) => Number(c.dataset.frameUs) / 1e6))
 		.toBeGreaterThan(minutes * 60 * 0.85);
 
 	// Zooming all the way in and out, and scrolling across the hour, stay smooth: no long tasks on the main thread.

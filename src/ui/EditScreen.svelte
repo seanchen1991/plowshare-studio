@@ -8,11 +8,15 @@
 	 * Dragging across the ruler or a lane selects a range to Cut; clicking moves
 	 * the playhead, or restores a Cut when it's on one in a lane. Every change to
 	 * the cut list can be undone, and is saved to the Project file straight away.
+	 *
+	 * The timeline shows the Session as recorded, Cuts included; playing plays the
+	 * edit, skipping them. The playhead is drawn at its place in the Session.
 	 */
 	import { onDestroy, onMount, tick, untrack } from 'svelte';
 	import { peakCount, peaksPerSecond } from '../lib/analysis/peaks';
 	import { loadPeaks } from '../lib/analysis/waveform';
 	import { addCut, canRedo, canUndo, cutAt, newHistory, record, redo, restoreCut, undo, type Range } from '../lib/edit/cuts';
+	import { editToSession, planDurationUs, planEdit, sessionToEdit } from '../lib/edit/plan';
 	import {
 		followPlayhead,
 		maxZoom,
@@ -29,7 +33,7 @@
 	import Button from './Button.svelte';
 	import LaneWaveform, { barStep } from './LaneWaveform.svelte';
 	import { formatDuration, formatTimecode } from './format';
-	import { Playback, type Showing } from './playback';
+	import { EditPlayer, type Showing } from './edit-player';
 
 	let {
 		project,
@@ -58,9 +62,10 @@
 	const lead = tracks[0]!;
 	const video = lead.recording.video;
 
-	let media = $state<HTMLVideoElement>();
-	let playback: Playback | undefined;
-	let timeUs = $state(0);
+	let screen = $state<HTMLCanvasElement>();
+	let player: EditPlayer | undefined;
+	/** The playhead in edit time, with the Cuts taken out. */
+	let editUs = $state(0);
 	let playing = $state(false);
 	let showing = $state<Showing>('gap');
 	let rate = $state(1);
@@ -73,6 +78,15 @@
 	/** Where Split started a Cut, until it's pressed again. */
 	let splitFromUs = $state<number | null>(null);
 	let saveFailed = $state(false);
+
+	// What plays: the Kept ranges, in order. The playhead's place in the Session follows from it.
+	const pieces = $derived(planEdit([{ segments: lead.segments, durationUs, cuts }]));
+	const editLengthUs = $derived(planDurationUs(pieces));
+	const timeUs = $derived(editToSession(pieces, editUs).sessionUs);
+	$effect(() => {
+		const next = pieces;
+		untrack(() => player?.setPieces(next));
+	});
 
 	/** Skip back and forward this far. */
 	const skipUs = 5_000_000;
@@ -100,18 +114,18 @@
 	const fraction = (us: number) => (durationUs > 0 ? us / durationUs : 0);
 
 	onMount(() => {
-		playback = new Playback(media!, lead.segments, durationUs, () => {
+		player = new EditPlayer(screen!, pieces, () => {
 			const before = timeUs;
-			timeUs = playback!.timeUs;
-			playing = playback!.playing;
-			showing = playback!.showing;
-			rate = playback!.rate;
+			editUs = player!.timeUs;
+			playing = player!.playing;
+			showing = player!.showing;
+			rate = player!.rate;
 			if (playing && usPerPx > 0) {
 				const to = followPlayhead(before / usPerPx, timeUs / usPerPx, scrollPx, viewWidth);
 				if (to !== null) scrollTo(to);
 			}
 		});
-		void playback.seek(0);
+		void player.seek(0);
 		void loadAllPeaks();
 		// Pinching a trackpad arrives as a wheel event with Ctrl held; it needs to be cancelable.
 		scroller!.addEventListener('wheel', onwheel, { passive: false });
@@ -119,7 +133,7 @@
 
 	onDestroy(() => {
 		loading.abort();
-		playback?.destroy();
+		player?.destroy();
 		scroller?.removeEventListener('wheel', onwheel);
 	});
 
@@ -148,18 +162,19 @@
 	}
 
 	function toggle() {
-		if (playing) playback?.pause();
-		else void playback?.play();
+		if (playing) player?.pause();
+		else void player?.play();
 	}
 
 	function skip(direction: 1 | -1) {
-		const to = Math.min(Math.max(0, timeUs + direction * skipUs), durationUs);
-		reveal(to);
-		void playback?.seek(to);
+		// In edit time: 5 s of what you hear.
+		const to = Math.min(Math.max(0, editUs + direction * skipUs), editLengthUs);
+		reveal(editToSession(pieces, to).sessionUs);
+		void player?.seek(to);
 	}
 
 	function nextSpeed() {
-		playback?.setRate(speeds[(speeds.indexOf(rate) + 1) % speeds.length]!);
+		player?.setRate(speeds[(speeds.indexOf(rate) + 1) % speeds.length]!);
 	}
 
 	function scrollTo(px: number) {
@@ -239,11 +254,11 @@
 				break;
 			case 'k':
 			case 'K':
-				playback?.pause();
+				player?.pause();
 				break;
 			case 'l':
 			case 'L':
-				if (!playing) void playback?.play();
+				if (!playing) void player?.play();
 				break;
 			case '+':
 			case '=':
@@ -343,13 +358,18 @@
 		const { atUs, dragging, restores } = press;
 		press = null;
 		if (dragging && selection) {
-			void playback?.seek(selection.startUs);
+			seekSession(selection.startUs);
 			return;
 		}
 		selection = null;
 		const cut = restores ? cutAt(cuts, atUs) : null;
 		if (cut) commit(restoreCut(cuts, cut));
-		else void playback?.seek(atUs);
+		else seekSession(atUs);
+	}
+
+	/** Moves the playhead to a place in the Session; inside a Cut, it lands just after it. */
+	function seekSession(us: number) {
+		void player?.seek(sessionToEdit(pieces, 0, us));
 	}
 </script>
 
@@ -360,8 +380,7 @@
 		data-testid="stage"
 		data-showing={showing}
 	>
-		<!-- svelte-ignore a11y_media_has_caption -->
-		<video bind:this={media} data-testid="editor-video" playsinline hidden={!video || showing !== 'segment'}></video>
+		<canvas bind:this={screen} data-testid="editor-canvas" hidden={!video || showing !== 'segment'}></canvas>
 		{#if !video}
 			<p class="audio-only" data-testid="audio-only">Audio only</p>
 		{/if}
@@ -376,7 +395,8 @@
 			<Button onclick={() => skip(1)} aria-label="Forward 5 seconds">
 				5<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M12.8 9.5a5 5 0 1 1-.9-4.6" /><path d="M12.5 1.8v3.4H9.1" /></svg>
 			</Button>
-			<span class="timecode" data-testid="timecode">{formatTimecode(timeUs)} <span class="total">/ {formatTimecode(durationUs)}</span></span>
+			<span class="timecode" data-testid="timecode">{formatTimecode(editUs)} <span class="total">/ {formatTimecode(editLengthUs)}</span></span>
+			<span class="take-time" data-testid="take-time" title="Where the playhead is in the take, Cuts included">Take {formatTimecode(timeUs)}</span>
 		</div>
 		<div class="group">
 			<Button onclick={split} aria-pressed={splitFromUs !== null} data-testid="split">{splitFromUs === null ? 'Split' : 'End cut'}</Button>
@@ -501,7 +521,7 @@
 		border-radius: var(--radius-video);
 		background: #000;
 	}
-	video {
+	canvas {
 		display: block;
 		width: 100%;
 		height: 100%;
@@ -524,6 +544,7 @@
 	}
 	.group {
 		display: flex;
+		flex-wrap: wrap;
 		align-items: center;
 		gap: 8px;
 	}
@@ -555,6 +576,13 @@
 	}
 	.total {
 		color: var(--muted);
+	}
+	.take-time {
+		color: var(--muted);
+		font-family: var(--font-mono);
+		font-size: var(--text-small);
+		font-variant-numeric: tabular-nums;
+		white-space: nowrap;
 	}
 	.timeline {
 		display: grid;
