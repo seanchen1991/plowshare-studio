@@ -86,6 +86,24 @@ for (const size of widths) {
 			await shot(page, testInfo, 'edit-4-zoomed-in');
 			while (await page.getByRole('button', { name: 'Zoom out' }).isEnabled()) await page.keyboard.press('-');
 
+			// Two Cuts, one of them across the Capture gap, and a selection about to be cut.
+			const lane = page.getByTestId('lane');
+			const laneBox = (await lane.boundingBox())!;
+			const drag = async (from: number, to: number) => {
+				await page.mouse.move(laneBox.x + laneBox.width * from, laneBox.y + laneBox.height / 2);
+				await page.mouse.down();
+				await page.mouse.move(laneBox.x + laneBox.width * to, laneBox.y + laneBox.height / 2, { steps: 6 });
+				await page.mouse.up();
+			};
+			await drag(0.12, 0.22);
+			await page.keyboard.press('Delete');
+			await drag(0.42, 0.62);
+			await page.keyboard.press('Delete');
+			await drag(0.78, 0.86);
+			await page.waitForTimeout(300);
+			await shot(page, testInfo, 'edit-5-cuts');
+			await page.keyboard.press('Escape');
+
 			// An audio-only take.
 			await page.getByRole('tab', { name: 'Record' }).click();
 			await page.getByRole('combobox', { name: 'Camera' }).selectOption({ label: 'Camera off (audio only)' });

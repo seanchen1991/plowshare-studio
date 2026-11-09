@@ -16,6 +16,14 @@ export async function listProjects(): Promise<Project[]> {
 	return projects.filter((p): p is Project => p !== null);
 }
 
+let saving = Promise.resolve();
+
+/** Writes a Project file. Writes happen one at a time, in order, so the last change is the one kept. */
+export function saveProject(project: Project): Promise<void> {
+	saving = saving.catch(() => {}).then(() => writeJson(projectFilePath(project.id), project));
+	return saving;
+}
+
 /** The Project for editing this take on its own: the one made last time, or a new one. */
 export async function projectForSession(session: Session, now = new Date()): Promise<Project> {
 	const existing = soloProjectFor(await listProjects(), session.id);

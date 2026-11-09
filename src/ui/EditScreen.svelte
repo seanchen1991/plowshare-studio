@@ -4,10 +4,15 @@
 	 * a ruler, a chip row and one lane per Track. Plays the first Track; every
 	 * Track gets a lane, for a host plus up to 3 guests. Zoomed in, the ruler,
 	 * chips and lanes scroll sideways together under the fixed lane headers.
+	 *
+	 * Dragging across the ruler or a lane selects a range to Cut; clicking moves
+	 * the playhead, or restores a Cut when it's on one in a lane. Every change to
+	 * the cut list can be undone, and is saved to the Project file straight away.
 	 */
 	import { onDestroy, onMount, tick, untrack } from 'svelte';
 	import { peakCount, peaksPerSecond } from '../lib/analysis/peaks';
 	import { loadPeaks } from '../lib/analysis/waveform';
+	import { addCut, canRedo, canUndo, cutAt, newHistory, record, redo, restoreCut, undo, type Range } from '../lib/edit/cuts';
 	import {
 		followPlayhead,
 		maxZoom,
@@ -18,14 +23,19 @@
 		zoomStep,
 		type PlacedSegment
 	} from '../lib/edit/timeline';
-	import type { Project } from '../lib/storage/project-file';
+	import type { Cut, Project } from '../lib/storage/project-file';
+	import { saveProject } from '../lib/storage/projects';
 	import type { Recording, Session } from '../lib/storage/session-file';
 	import Button from './Button.svelte';
 	import LaneWaveform, { barStep } from './LaneWaveform.svelte';
 	import { formatDuration, formatTimecode } from './format';
 	import { Playback, type Showing } from './playback';
 
-	let { project, session }: { project: Project; session: Session } = $props();
+	let {
+		project,
+		session,
+		onProjectChange
+	}: { project: Project; session: Session; onProjectChange: (project: Project) => void } = $props();
 
 	interface Track {
 		recording: Recording;
@@ -54,6 +64,15 @@
 	let playing = $state(false);
 	let showing = $state<Showing>('gap');
 	let rate = $state(1);
+
+	// The cut list's history; its present is the Session's Cuts as they are now.
+	let history = $state.raw(newHistory<Cut[]>(untrack(() => project.sessions.find((s) => s.sessionId === opened.id)?.cuts ?? [])));
+	const cuts = $derived(history.present);
+	const acceptedCuts = $derived(cuts.filter((c) => c.accepted));
+	let selection = $state<Range | null>(null);
+	/** Where Split started a Cut, until it's pressed again. */
+	let splitFromUs = $state<number | null>(null);
+	let saveFailed = $state(false);
 
 	/** Skip back and forward this far. */
 	const skipUs = 5_000_000;
@@ -186,8 +205,26 @@
 	}
 
 	function onkeydown(event: KeyboardEvent) {
-		if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey || typing(event)) return;
+		if (event.defaultPrevented || typing(event)) return;
+		// ⌘Z and ⇧⌘Z, or Ctrl on other systems.
+		if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === 'z') {
+			event.preventDefault();
+			if (event.shiftKey) redoChange();
+			else undoChange();
+			return;
+		}
+		if (event.metaKey || event.ctrlKey || event.altKey) return;
 		switch (event.key) {
+			case 'Delete':
+			case 'Backspace':
+				if (!selection) return;
+				cutSelection();
+				break;
+			case 'Escape':
+				if (!selection && splitFromUs === null) return;
+				selection = null;
+				splitFromUs = null;
+				break;
 			case ' ':
 				if (!event.repeat) toggle();
 				break;
@@ -227,14 +264,92 @@
 		if (event.key === ' ' && !typing(event)) event.preventDefault();
 	}
 
-	/** Moves the playhead to where the pointer is on the ruler or a lane; dragging scrubs. */
-	function seekTo(event: PointerEvent) {
-		if (event.type === 'pointermove' && !(event.buttons & 1)) return;
-		const target = event.currentTarget as HTMLElement;
-		if (event.type === 'pointerdown') target.setPointerCapture?.(event.pointerId);
+	/** Changes the cut list: it can be undone, and is saved. */
+	function commit(next: Cut[]) {
+		history = record(history, next);
+		save();
+	}
+
+	function save() {
+		const next: Project = {
+			...project,
+			sessions: project.sessions.map((s) => (s.sessionId === opened.id ? { ...s, cuts: history.present } : s))
+		};
+		onProjectChange(next);
+		saveProject(next).then(
+			() => (saveFailed = false),
+			() => (saveFailed = true)
+		);
+	}
+
+	function undoChange() {
+		if (!canUndo(history)) return;
+		history = undo(history);
+		selection = null;
+		save();
+	}
+
+	function redoChange() {
+		if (!canRedo(history)) return;
+		history = redo(history);
+		selection = null;
+		save();
+	}
+
+	function cutSelection() {
+		if (!selection) return;
+		commit(addCut(cuts, { ...selection, reason: 'manual', accepted: true }, durationUs));
+		selection = null;
+	}
+
+	/** Split starts a Cut at the playhead; pressed again, it ends the Cut there. */
+	function split() {
+		if (splitFromUs === null) {
+			splitFromUs = timeUs;
+			return;
+		}
+		commit(addCut(cuts, { startUs: splitFromUs, endUs: timeUs, reason: 'manual', accepted: true }, durationUs));
+		splitFromUs = null;
+	}
+
+	// A press on the ruler or a lane: a click if it hardly moves, otherwise a drag that selects.
+	let press: { atUs: number; x: number; dragging: boolean; target: HTMLElement; restores: boolean } | null = null;
+
+	function timeAt(event: PointerEvent, target: HTMLElement): number {
 		const rect = target.getBoundingClientRect();
-		const at = Math.min(Math.max(0, (event.clientX - rect.left) / rect.width), 1);
-		void playback?.seek(Math.round(at * durationUs));
+		return Math.round(Math.min(Math.max(0, (event.clientX - rect.left) / rect.width), 1) * durationUs);
+	}
+
+	/** `restores`: a click on a Cut restores it (lanes) rather than moving the playhead there (ruler). */
+	function pressed(restores: boolean) {
+		return (event: PointerEvent) => {
+			if (event.button !== 0) return;
+			const target = event.currentTarget as HTMLElement;
+			target.setPointerCapture?.(event.pointerId);
+			press = { atUs: timeAt(event, target), x: event.clientX, dragging: false, target, restores };
+		};
+	}
+
+	function moved(event: PointerEvent) {
+		if (!press) return;
+		if (!press.dragging && Math.abs(event.clientX - press.x) < 4) return;
+		press.dragging = true;
+		const atUs = timeAt(event, press.target);
+		selection = { startUs: Math.min(press.atUs, atUs), endUs: Math.max(press.atUs, atUs) };
+	}
+
+	function released() {
+		if (!press) return;
+		const { atUs, dragging, restores } = press;
+		press = null;
+		if (dragging && selection) {
+			void playback?.seek(selection.startUs);
+			return;
+		}
+		selection = null;
+		const cut = restores ? cutAt(cuts, atUs) : null;
+		if (cut) commit(restoreCut(cuts, cut));
+		else void playback?.seek(atUs);
 	}
 </script>
 
@@ -264,8 +379,18 @@
 			<span class="timecode" data-testid="timecode">{formatTimecode(timeUs)} <span class="total">/ {formatTimecode(durationUs)}</span></span>
 		</div>
 		<div class="group">
+			<Button onclick={split} aria-pressed={splitFromUs !== null} data-testid="split">{splitFromUs === null ? 'Split' : 'End cut'}</Button>
+			<Button onclick={cutSelection} disabled={!selection}>Cut</Button>
+			<span class="pair">
+				<Button onclick={undoChange} disabled={!canUndo(history)} aria-label="Undo">
+					<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 3.5L2.5 6.5l3 3" /><path d="M2.5 6.5h7a4 4 0 0 1 0 8H7" /></svg>
+				</Button>
+				<Button onclick={redoChange} disabled={!canRedo(history)} aria-label="Redo">
+					<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10.5 3.5l3 3-3 3" /><path d="M13.5 6.5h-7a4 4 0 0 0 0 8H9" /></svg>
+				</Button>
+			</span>
 			<Button onclick={nextSpeed} aria-label="Speed {rate}×" data-testid="speed"><span class="figures">{rate}×</span></Button>
-			<span class="zoom">
+			<span class="pair">
 				<Button onclick={() => zoomTo(zoom / zoomStep)} disabled={zoom <= 1} aria-label="Zoom out">
 					<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" /><path d="M10.4 10.4l3.6 3.6M5 7h4" /></svg>
 				</Button>
@@ -275,6 +400,10 @@
 			</span>
 		</div>
 	</div>
+
+	{#if saveFailed}
+		<p class="save-failed" role="alert">Your latest change couldn't be saved. It will be saved with the next one, if there's room.</p>
+	{/if}
 
 	<div class="timeline" data-testid="timeline" data-zoom={zoom} style:--view-width="{viewWidth}px">
 		<div class="headers">
@@ -299,6 +428,22 @@
 		>
 			<div class="content" style:width={zoom > 1 ? `${contentWidth}px` : '100%'}>
 				<div class="playhead" data-testid="playhead" style:--at={fraction(timeUs)}></div>
+				{#each acceptedCuts as cut (cut.startUs)}
+					<div
+						class="band cut"
+						data-testid="cut"
+						data-start-us={cut.startUs}
+						data-end-us={cut.endUs}
+						style:--from={fraction(cut.startUs)}
+						style:--to={fraction(cut.endUs)}
+					></div>
+				{/each}
+				{#if selection}
+					<div class="band selection" data-testid="selection" style:--from={fraction(selection.startUs)} style:--to={fraction(selection.endUs)}></div>
+				{/if}
+				{#if splitFromUs !== null}
+					<div class="split-from" data-testid="split-from" style:--at={fraction(splitFromUs)}></div>
+				{/if}
 				<div
 					class="ruler ruler-row"
 					data-testid="ruler"
@@ -308,8 +453,10 @@
 					aria-valuemin={0}
 					aria-valuemax={Math.round(durationUs / 1e6)}
 					aria-valuenow={Math.round(timeUs / 1e6)}
-					onpointerdown={seekTo}
-					onpointermove={seekTo}
+					onpointerdown={pressed(false)}
+					onpointermove={moved}
+					onpointerup={released}
+					onpointercancel={() => (press = null)}
 				>
 					{#each marks as mark (mark)}
 						<span class="mark figures" style:left="{fraction(mark) * 100}%">{formatDuration(mark)}</span>
@@ -318,8 +465,16 @@
 				<div class="chips chips-row" data-testid="chips"></div>
 				{#each tracks as track, t (track.recording.id)}
 					<!-- svelte-ignore a11y_no_static_element_interactions -->
-					<div class="lane" data-testid="lane" data-recording-id={track.recording.id} onpointerdown={seekTo} onpointermove={seekTo}>
-						<LaneWaveform segments={track.segments} {viewStartUs} {viewUs} peaks={peaks[t]!} known={known[t]!} {version} color={track.color} />
+					<div
+						class="lane"
+						data-testid="lane"
+						data-recording-id={track.recording.id}
+						onpointerdown={pressed(true)}
+						onpointermove={moved}
+						onpointerup={released}
+						onpointercancel={() => (press = null)}
+					>
+						<LaneWaveform segments={track.segments} {viewStartUs} {viewUs} cuts={acceptedCuts} peaks={peaks[t]!} known={known[t]!} {version} color={track.color} />
 					</div>
 				{/each}
 			</div>
@@ -381,9 +536,15 @@
 		stroke-linecap: round;
 		stroke-linejoin: round;
 	}
-	.zoom {
+	.pair {
 		display: flex;
 		gap: 4px;
+	}
+	.save-failed {
+		margin: 0;
+		color: var(--problem-fg);
+		font-size: var(--text-small);
+		text-align: center;
 	}
 	.timecode {
 		margin-left: 8px;
@@ -472,6 +633,31 @@
 	.lane-header:last-child,
 	.lane:last-child {
 		border-bottom: 0;
+	}
+	/* Cuts and the selection run through every lane, below the ruler and chips. */
+	.band {
+		position: absolute;
+		top: 48px;
+		bottom: 0;
+		left: calc(100% * var(--from));
+		width: calc(100% * (var(--to) - var(--from)));
+		pointer-events: none;
+	}
+	.cut {
+		border-inline: 1px solid var(--cut-edge);
+		background: var(--cut-bg);
+	}
+	.selection {
+		border-inline: 1px solid var(--select-edge);
+		background: var(--select-bg);
+	}
+	.split-from {
+		position: absolute;
+		top: 24px;
+		bottom: 0;
+		left: calc(100% * var(--at));
+		border-left: 1px dashed var(--select-edge);
+		pointer-events: none;
 	}
 	.playhead {
 		position: absolute;

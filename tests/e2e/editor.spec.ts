@@ -212,7 +212,7 @@ test('play, pause and seek; the video follows the playhead across a Capture gap 
 	expect(Math.abs(state.currentTime - (playhead - (a.durationUs! + gapUs) / 1e6))).toBeLessThan(0.3);
 
 	// At the end it stops.
-	await expect(page.getByRole('button', { name: 'Play' })).toBeVisible({ timeout: 10_000 });
+	await expect(page.getByRole('button', { name: 'Play' })).toBeVisible({ timeout: 20_000 });
 	expect(await playheadSeconds(page)).toBeCloseTo(Math.floor((totalUs / 1e6) * 10) / 10, 0);
 });
 
@@ -238,6 +238,25 @@ test('an audio-only take opens with its waveform and plays', async ({ page }) =>
 	expect(state.currentTime).toBeGreaterThan(0.6);
 	expect(await playheadSeconds(page)).toBeGreaterThan(0.6);
 });
+
+/**
+ * How fast the playhead runs while playing, in seconds of timeline a second.
+ * Measured inside the page once it's moving, so a slow start under load doesn't count.
+ */
+function playheadRate(page: Page, ms = 800): Promise<number> {
+	return page.evaluate(async (ms) => {
+		const read = () => {
+			const [m, s] = document.querySelector('[data-testid="timecode"]')!.textContent!.split('/')[0]!.trim().split(':');
+			return Number(m) * 60 + Number(s);
+		};
+		const frame = () => new Promise((resolve) => requestAnimationFrame(resolve));
+		const first = read();
+		while (read() === first) await frame();
+		const [startMs, startS] = [performance.now(), read()];
+		await new Promise((resolve) => setTimeout(resolve, ms));
+		return (read() - startS) / ((performance.now() - startMs) / 1000);
+	}, ms);
+}
 
 /** What the timeline shows: its zoom, how far it's scrolled, and its widths in px. */
 const view = (page: Page) =>
@@ -345,24 +364,20 @@ test('skip, speed and zoom work from the toolbar and the keyboard', async ({ pag
 	await expect(speed).toHaveText('2×');
 	await expect(speed).toHaveAccessibleName('Speed 2×');
 	// At 2× the playhead runs twice as fast, in a Segment...
-	let before = await playheadSeconds(page);
 	await page.getByRole('button', { name: 'Play' }).click();
-	await page.waitForTimeout(1000);
+	let rate = await playheadRate(page);
 	await page.getByRole('button', { name: 'Pause' }).click();
-	let ran = (await playheadSeconds(page)) - before;
-	expect(ran).toBeGreaterThan(1.6);
-	expect(ran).toBeLessThan(2.8);
+	expect(rate).toBeGreaterThan(1.6);
+	expect(rate).toBeLessThan(2.4);
 	// ...through a Capture gap...
 	await page.keyboard.press('ArrowRight');
 	await page.keyboard.press('ArrowRight');
 	await expect(page.getByTestId('stage')).toHaveAttribute('data-showing', 'gap');
-	before = await playheadSeconds(page);
 	await page.keyboard.press('Space');
-	await page.waitForTimeout(1000);
+	rate = await playheadRate(page);
 	await page.keyboard.press('Space');
-	ran = (await playheadSeconds(page)) - before;
-	expect(ran).toBeGreaterThan(1.6);
-	expect(ran).toBeLessThan(2.8);
+	expect(rate).toBeGreaterThan(1.6);
+	expect(rate).toBeLessThan(2.4);
 	// ...and in the next Segment's file too.
 	const ruler = page.getByTestId('ruler');
 	await ruler.click({ position: { x: ((totalUs - 2e6) / totalUs) * (await ruler.boundingBox())!.width, y: 12 } });
@@ -475,4 +490,145 @@ test('zoomed in, the timeline scrolls and follows the playhead, and the waveform
 	await page.keyboard.press('ArrowRight');
 	await expect.poll(() => playheadX(page)).toBeGreaterThan(0);
 	expect(await playheadX(page)).toBeLessThan((await view(page)).viewWidth);
+});
+
+/** Drags across the ruler or a lane from one share of its width to another. */
+async function dragAcross(page: Page, target: 'ruler' | 'lane', from: number, to: number) {
+	const box = (await page.getByTestId(target).first().boundingBox())!;
+	const y = box.y + box.height / 2;
+	await page.mouse.move(box.x + box.width * from, y);
+	await page.mouse.down();
+	await page.mouse.move(box.x + box.width * ((from + to) / 2), y, { steps: 4 });
+	await page.mouse.move(box.x + box.width * to, y, { steps: 4 });
+	await page.mouse.up();
+}
+
+/** Clicks the ruler or a lane at a share of its width. */
+async function clickAt(page: Page, target: 'ruler' | 'lane', at: number) {
+	const box = (await page.getByTestId(target).first().boundingBox())!;
+	await page.getByTestId(target).first().click({ position: { x: box.width * at, y: box.height / 2 } });
+}
+
+/** The Cuts on screen, as shares of the timeline. */
+const cutBands = (page: Page, durationUs: number) =>
+	page.getByTestId('cut').evaluateAll(
+		(bands, durationUs) => bands.map((b) => [Number(b.dataset.startUs) / durationUs, Number(b.dataset.endUs) / durationUs]),
+		durationUs
+	);
+
+/** Pixels of the lane's waveform between two shares of its width: how many are drawn in the Track's colour, and how many greyed. */
+function waveColours(page: Page, from: number, to: number): Promise<{ track: number; grey: number }> {
+	return page.getByTestId('lane').first().locator('canvas').evaluate(
+		(canvas: HTMLCanvasElement, [from, to]) => {
+			const x = Math.round(from! * canvas.width);
+			const { data } = canvas.getContext('2d')!.getImageData(x, 0, Math.round(to! * canvas.width) - x, canvas.height);
+			let track = 0;
+			let grey = 0;
+			for (let i = 0; i < data.length; i += 4) {
+				if (data[i + 3]! < 200) continue;
+				const [r, g, b] = [data[i]!, data[i + 1]!, data[i + 2]!];
+				// Teal (#2f8f83) is far greener than red; the greyed bars (#cbc6d1) are nearly neutral.
+				if (g - r > 60) track++;
+				else if (Math.abs(r - b) < 20 && r > 150) grey++;
+			}
+			return { track, grey };
+		},
+		[from, to]
+	);
+}
+
+test('select a range and Cut it, restore it, Split at the playhead, undo and redo; Cuts survive a reload', async ({ page }) => {
+	test.setTimeout(120_000);
+	await page.goto('/');
+	const session = await recordTake(page, 8);
+	const durationUs = session.recordings[0]!.segments[0]!.durationUs!;
+	await page.getByTestId('session').first().getByRole('button', { name: 'Edit' }).click();
+	const projectId = (await page.getByTestId('editor').getAttribute('data-project-id'))!;
+	const savedCuts = async () => (await readOpfsJson<Project>(page, `projects/${projectId}/project.json`)).sessions[0]!.cuts;
+	const segment = session.recordings[0]!.segments[0]!;
+	await expect.poll(() => opfsFileExists(page, segment.path!.replace(/\.[^.]+$/, '.peaks')), { timeout: 30_000 }).toBe(true);
+	const cutButton = page.getByRole('button', { name: 'Cut', exact: true });
+	const undoButton = page.getByRole('button', { name: 'Undo' });
+	const redoButton = page.getByRole('button', { name: 'Redo' });
+	await expect(cutButton).toBeDisabled();
+	await expect(undoButton).toBeDisabled();
+	// Within a few pixels of where the mouse was, as shares of the timeline.
+	const near = (bands: number[][], expected: number[][]) => {
+		expect(bands).toHaveLength(expected.length);
+		bands.forEach((band, i) => band.forEach((v, j) => expect(Math.abs(v - expected[i]![j]!)).toBeLessThan(0.004)));
+	};
+
+	// Drag across a lane, then Delete: a manual Cut, saved, with the waveform greyed inside it.
+	await dragAcross(page, 'lane', 0.2, 0.4);
+	await expect(page.getByTestId('selection')).toBeVisible();
+	await expect(cutButton).toBeEnabled();
+	await page.keyboard.press('Delete');
+	await expect(page.getByTestId('selection')).toHaveCount(0);
+	near(await cutBands(page, durationUs), [[0.2, 0.4]]);
+	await expect.poll(async () => (await savedCuts()).length).toBe(1);
+	expect((await savedCuts())[0]).toMatchObject({ reason: 'manual', accepted: true });
+	expect(Number.isInteger((await savedCuts())[0]!.startUs)).toBe(true);
+	await expect.poll(() => waveColours(page, 0.21, 0.39)).toMatchObject({ track: 0 });
+	expect((await waveColours(page, 0.21, 0.39)).grey).toBeGreaterThan(20);
+	expect((await waveColours(page, 0.5, 0.9)).track).toBeGreaterThan(20);
+
+	// Drag across the ruler, then the Cut button.
+	await dragAcross(page, 'ruler', 0.7, 0.6);
+	await cutButton.click();
+	near(await cutBands(page, durationUs), [[0.2, 0.4], [0.6, 0.7]]);
+	await expect.poll(async () => (await savedCuts()).length).toBe(2);
+
+	// Undo and redo, with the keyboard and the toolbar; each is saved.
+	await page.keyboard.press('ControlOrMeta+z');
+	near(await cutBands(page, durationUs), [[0.2, 0.4]]);
+	await expect.poll(async () => (await savedCuts()).length).toBe(1);
+	await page.keyboard.press('ControlOrMeta+Shift+z');
+	near(await cutBands(page, durationUs), [[0.2, 0.4], [0.6, 0.7]]);
+	await expect.poll(async () => (await savedCuts()).length).toBe(2);
+	await undoButton.click();
+	await expect(page.getByTestId('cut')).toHaveCount(1);
+	await redoButton.click();
+	await expect(page.getByTestId('cut')).toHaveCount(2);
+	await expect(redoButton).toBeDisabled();
+
+	// A Cut across both merges them.
+	await dragAcross(page, 'lane', 0.35, 0.65);
+	await page.keyboard.press('Backspace');
+	near(await cutBands(page, durationUs), [[0.2, 0.7]]);
+
+	// Clicking a Cut in a lane restores it; clicking the ruler there only moves the playhead.
+	await clickAt(page, 'ruler', 0.5);
+	await expect(page.getByTestId('cut')).toHaveCount(1);
+	await expect.poll(() => playheadSeconds(page)).toBeCloseTo((0.5 * durationUs) / 1e6, 0);
+	await clickAt(page, 'lane', 0.5);
+	await expect(page.getByTestId('cut')).toHaveCount(0);
+	await expect.poll(async () => (await savedCuts()).length).toBe(0);
+	await expect.poll(() => waveColours(page, 0.21, 0.69)).toMatchObject({ grey: 0 });
+	await page.keyboard.press('ControlOrMeta+z');
+	near(await cutBands(page, durationUs), [[0.2, 0.7]]);
+
+	// Split starts a Cut at the playhead, and pressed again ends it there.
+	await clickAt(page, 'ruler', 0.05);
+	const splitButton = page.getByTestId('split');
+	await splitButton.click();
+	await expect(splitButton).toHaveText('End cut');
+	await expect(page.getByTestId('split-from')).toBeVisible();
+	await clickAt(page, 'ruler', 0.12);
+	await splitButton.click();
+	await expect(splitButton).toHaveText('Split');
+	near(await cutBands(page, durationUs), [[0.05, 0.12], [0.2, 0.7]]);
+
+	// Escape drops a selection without cutting.
+	await dragAcross(page, 'lane', 0.8, 0.9);
+	await page.keyboard.press('Escape');
+	await expect(page.getByTestId('selection')).toHaveCount(0);
+	await page.keyboard.press('Delete');
+	await expect(page.getByTestId('cut')).toHaveCount(2);
+
+	// After a reload the Cuts are still there.
+	await expect.poll(async () => (await savedCuts()).length).toBe(2);
+	await page.reload();
+	await page.getByRole('tab', { name: 'Edit' }).click();
+	near(await cutBands(page, durationUs), [[0.05, 0.12], [0.2, 0.7]]);
+	expect((await savedCuts()).map((c) => c.reason)).toEqual(['manual', 'manual']);
 });

@@ -23,6 +23,9 @@
 	--problem-fg: #a8282d;
 	--cut-bg: rgb(120 110 130 / 0.1);
 	--cut-edge: #b9b3c2;
+	--cut-wave: #cbc6d1;
+	--select-bg: rgb(91 111 208 / 0.14);
+	--select-edge: #5b6fd0;
 
 	--text: 14px;
 	--text-small: 12px;

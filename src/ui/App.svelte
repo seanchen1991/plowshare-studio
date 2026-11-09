@@ -390,7 +390,7 @@
 		{#if screen === 'edit' && project && editSession}
 			<section aria-label="Edit">
 				{#key project.id}
-					<EditScreen {project} session={editSession} />
+					<EditScreen {project} session={editSession} onProjectChange={(changed) => (project = changed)} />
 				{/key}
 			</section>
 		{/if}
